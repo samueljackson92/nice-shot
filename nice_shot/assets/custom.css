@@ -1,0 +1,15 @@
+/* ── Right pane: tab panels fill available height ── */
+#tabs [role="tabpanel"] {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Shot-table fills its tab panel */
+#shot-table {
+    flex: 1;
+    min-height: 0;
+}
+

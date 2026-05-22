@@ -1,0 +1,71 @@
+# Shot Explorer configuration
+# Run with: uv run python nice_shot/app.py [options]
+#
+# CLI options (all have defaults):
+#   --config PATH       Path to this config file (default: nice_shot/config.yaml)
+#   --shot-data PATH    Path to shot stats file, .csv or .parquet
+#                       (default: outputs/shot_stats.parquet)
+#   --data-dir PATH     Directory of per-shot parquet files for the parquet backend
+#                       (default: data/mastu/)
+#   --umap-cache PATH   Path to UMAP embedding cache, created if missing
+#                       (default: outputs/umap_embedding.npy)
+#   --host HOST         Host to bind to (default: 0.0.0.0)
+#   --port PORT         Port to listen on (default: 8050)
+#   --no-debug          Disable Dash debug mode
+
+# Backend for loading per-shot time traces.
+# Options:
+#   parquet  – read from local parquet files under --data-dir (default)
+#   uda      – fetch live from UDA via uda-xarray
+backend: parquet
+
+# Signals to load and display in the time-trace pane.
+# For the parquet backend these must match column names in the per-shot files.
+# For the UDA backend these are passed directly as signal names (e.g. "ip", "ne").
+signals:
+  - ip
+  - ne
+  - tf_current
+  - plasma_energy
+  - loopv
+
+# Crop time traces to this window (seconds).
+# Applies to both backends.
+time_window:
+  min_time: 0.0
+  max_time: 1.0
+
+# UDA-specific options (only used when backend: uda).
+# Remove or comment out this section when using the parquet backend.
+#
+uda:
+  # Interpolate all signals onto a uniform time grid at this sample rate (Hz).
+  # If omitted, the native time axis of the first successfully loaded signal is used.
+  timebase_hz: 1000
+
+# Columns to use as features for the UMAP projection.
+# Defaults to all numeric columns (excluding 'shot') if not set.
+# Changing this list forces the UMAP cache to be recomputed.
+# Shots with NaN in any of these columns are excluded from the projection.
+#
+umap_features:
+  - pohm_max
+  - johm_total
+  - pnbi_max_ss
+  - enbi_max_ss
+  - jnbi_total_ss
+  - pnbi_max_sw
+  - enbi_max_sw
+  - jnbi_total_sw
+  - ip_max
+  - ip_av
+  - kappa_max
+  - te0_max
+  - ne0_max
+  - bt_max
+  - betmhd_max
+  - bepmhd_max
+  - wmhd_ipmax
+  - tautot_max
+
+reference_shot_col: reference__number

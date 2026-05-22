@@ -1,0 +1,76 @@
+# NiceShot! configuration
+# Run with: uv run python nice_shot/app.py [options]
+#
+# CLI options (all have defaults):
+#   --config PATH       Path to this config file (default: nice_shot/config.yaml)
+#   --shot-data PATH    Path to shot stats file, .csv or .parquet
+#                       (default: outputs/shot_stats.parquet)
+#   --data-dir PATH     Directory of per-shot parquet files for the parquet backend
+#                       (default: data/mastu/)
+#   --umap-cache PATH   Path to projection cache, created if missing
+#                       (default: ~/Library/Caches/niceshot/projection.npy on macOS,
+#                                 $XDG_CACHE_HOME/niceshot/projection.npy on Linux)
+#   --shap-data PATH    Path to SHAP values NetCDF file (.nc) — shows SHAP decision-plot tab
+#                       (hidden by default; tab only appears when this argument is supplied)
+#   --host HOST         Host to bind to (default: 0.0.0.0)
+#   --port PORT         Port to listen on (default: 8050)
+#   --no-debug          Disable Dash debug mode
+
+# Backend for loading per-shot time traces.
+# Options:
+#   parquet  – read from local parquet files under --data-dir (default)
+#              also transparently supports .csv files in the same directory
+#   uda      – fetch live from UDA via uda-xarray  (URL: uda://<signal>:<shot>)
+#   sal      – fetch live from SAL via sal-xarray   (URL: sal://pulse/<shot>/<signal>)
+backend: parquet
+
+# Signals to load and display in the time-trace pane.
+# For the parquet backend these must match column names in the per-shot files.
+# For the UDA backend these are passed directly as signal names (e.g. "ip", "ne").
+signals:
+  - ip
+  - ne
+  - dalpha
+  - loopv
+  - plasma_energy
+
+# Crop time traces to this window (seconds).
+# Applies to both backends.
+time_window:
+  min_time: 0.0
+  max_time: 1.0
+
+# Algorithm to use for the 2D projection.
+# Options:
+#   umap  – UMAP (default, slower, often better structure preservation)
+#   pca   – PCA (fast, linear, deterministic)
+# Changing this forces the projection cache to be recomputed.
+projection_method: umap
+
+# Columns to use as features for the UMAP projection.
+# Defaults to all numeric columns (excluding 'shot') if not set.
+# Changing this list forces the UMAP cache to be recomputed.
+# Shots with NaN in any of these columns are excluded from the projection.
+#
+umap_features:
+  - ip_max
+  - ne_max
+  - ff_slope
+  - fb_slope
+  - loopv_mean
+  - tf_current
+
+# Column in the shot data that holds the reference (parent) shot ID for each shot.
+# When set, a toggle button appears in the left panel; enabling it highlights the
+# full connected reference-shot graph on the scatter plots when a point is clicked.
+# Omit or set to null to hide the feature entirely.
+#
+# reference_shot_col: reference__number
+
+# UDA-specific options (only used when backend: uda).
+# Remove or comment out this section when using the parquet backend.
+#
+# uda:
+#   # Interpolate all signals onto a uniform time grid at this sample rate (Hz).
+#   # If omitted, the native time axis of the first successfully loaded signal is used.
+#   timebase_hz: 1000
