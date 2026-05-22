@@ -142,7 +142,7 @@ else:
 
 if not SHOW_TRACES:
     log.info(
-        "Time-trace panel disabled — backend='%s', "
+        "Time-trace panel greyed out — backend='%s', "
         "data-dir '%s' not found or empty.",
         BACKEND,
         MASTU_DATA_DIR,
@@ -931,22 +931,20 @@ app.layout = html.Div(
         html.Div(
             style=dict(display="flex", flex="1", overflow="hidden"),
             children=[
-                # -- Left pane: time traces (only when SHOW_TRACES) --
-                *(
-                    [
-                        html.Div(
-                            style=dict(
-                                flex="1",
-                                minWidth="0",
-                                padding="16px",
-                                borderRight=BORDER,
-                                backgroundColor=PANEL_BG,
-                                display="flex",
-                                flexDirection="column",
-                                gap="8px",
-                                overflow="hidden",
-                            ),
-                            children=[
+                # -- Left pane --
+                html.Div(
+                    style=dict(
+                        flex="1",
+                        minWidth="0",
+                        padding="16px",
+                        borderRight=BORDER,
+                        backgroundColor=PANEL_BG,
+                        display="flex",
+                        flexDirection="column",
+                        gap="8px",
+                        overflow="hidden",
+                    ),
+                    children=[
                                 html.H3(
                                     id="traces-title",
                                     children="Time Traces",
@@ -1012,6 +1010,7 @@ app.layout = html.Div(
                                         dcc.Tab(
                                             label="Time Traces",
                                             value="traces",
+                                            disabled=not SHOW_TRACES,
                                             style=dict(
                                                 color=TEXT,
                                                 backgroundColor=PANEL_BG,
@@ -1024,6 +1023,13 @@ app.layout = html.Div(
                                                 borderTop=f"2px solid {ACCENT}",
                                                 fontSize="12px",
                                                 padding="4px 10px",
+                                            ),
+                                            disabled_style=dict(
+                                                color="#444",
+                                                backgroundColor=PANEL_BG,
+                                                fontSize="12px",
+                                                padding="4px 10px",
+                                                cursor="not-allowed",
                                             ),
                                             children=[
                                                 dcc.Graph(
@@ -1041,6 +1047,18 @@ app.layout = html.Div(
                                                     style=dict(
                                                         height="calc(100vh - 430px)",
                                                         minHeight="220px",
+                                                    ),
+                                                ) if SHOW_TRACES else html.Div(
+                                                    style=dict(
+                                                        height="calc(100vh - 430px)",
+                                                        minHeight="220px",
+                                                        display="flex",
+                                                        alignItems="center",
+                                                        justifyContent="center",
+                                                    ),
+                                                    children=html.Span(
+                                                        "No data directory — pass --data-dir to enable time traces",
+                                                        style=dict(fontSize="12px", color="#444"),
                                                     ),
                                                 ),
                                             ],
@@ -1320,15 +1338,11 @@ app.layout = html.Div(
                                     ],
                                 ),
                             ],
-                        )
-                    ]
-                    if SHOW_TRACES
-                    else []
-                ),
+                        ),
                 # -- Right pane: tabs --
                 html.Div(
                     style=dict(
-                        flex="2" if SHOW_TRACES else "1",
+                        flex="2",
                         minWidth="0",
                         padding="12px",
                         overflow="hidden",
@@ -2031,13 +2045,11 @@ app.clientside_callback(
     prevent_initial_call=True,
 )
 
-if SHOW_TRACES:
-
-    @app.callback(
-        Output("shot-info-panel", "children"),
-        Input("selected-shot", "data"),
-    )
-    def update_shot_info(selected_shot):
+@app.callback(
+    Output("shot-info-panel", "children"),
+    Input("selected-shot", "data"),
+)
+def update_shot_info(selected_shot):
         if selected_shot is None:
             return html.Span(
                 "Click a point to see shot details",
@@ -2078,6 +2090,8 @@ if SHOW_TRACES:
                 for i, (k, v) in enumerate(items)
             ],
         )
+
+if SHOW_TRACES:
 
     @app.callback(
         Output("traces-plot", "figure"),

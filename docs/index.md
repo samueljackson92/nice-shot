@@ -11,6 +11,8 @@ Point it at a shot-statistics file and it gives you:
 - **SHAP decision plots** — per-shot feature attribution (optional)
 - **Reference graph** — reference-shot relationships overlaid on scatter plots (optional)
 
+![NiceShot! dashboard](assets/ui.png)
+
 ---
 
 ## Contents
