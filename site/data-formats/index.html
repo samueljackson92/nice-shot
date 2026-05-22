@@ -1,0 +1,670 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Interactive tokamak shot dashboard">
+      
+      
+      
+      
+        <link rel="prev" href="../configuration/">
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="zensical-0.0.43">
+    
+    
+      
+        <title>Data Formats - NiceShot!</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.fba56155.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,500,500i,700,700i%7CJetBrains+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-label="Navigation"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#data-formats" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="./.." title="NiceShot!" class="md-header__button md-logo" aria-label="NiceShot!" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 7v14M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer" aria-label="Navigation">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            NiceShot!
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Data Formats
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search" aria-label="Search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="./.." title="NiceShot!" class="md-nav__button md-logo" aria-label="NiceShot!" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 7v14M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>
+
+    </a>
+    NiceShot!
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Home
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Quickstart
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Configuration
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Data Formats
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Data Formats
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#shot-statistics-file-shot-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Shot statistics file (<code>--shot-data</code>)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#per-shot-time-trace-files-data-dir-parquet-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Per-shot time trace files (<code>--data-dir</code>, parquet backend)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#projection-files-projection" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Projection files (<code>--projection</code>)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Projection files (--projection)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#numpy-npy" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        NumPy <code>.npy</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#csv-or-parquet" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CSV or Parquet
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shap-values-file-shap-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        SHAP values file (<code>--shap-data</code>)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#shot-statistics-file-shot-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Shot statistics file (<code>--shot-data</code>)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#per-shot-time-trace-files-data-dir-parquet-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Per-shot time trace files (<code>--data-dir</code>, parquet backend)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#projection-files-projection" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Projection files (<code>--projection</code>)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Projection files (--projection)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#numpy-npy" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        NumPy <code>.npy</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#csv-or-parquet" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CSV or Parquet
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shap-values-file-shap-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        SHAP values file (<code>--shap-data</code>)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+<h1 id="data-formats">Data Formats<a class="headerlink" href="#data-formats" title="Permanent link">&para;</a></h1>
+<hr />
+<h2 id="shot-statistics-file-shot-data">Shot statistics file (<code>--shot-data</code>)<a class="headerlink" href="#shot-statistics-file-shot-data" title="Permanent link">&para;</a></h2>
+<p>A flat table of per-shot summary statistics. Accepted formats: <code>.parquet</code>, <code>.csv</code>.</p>
+<p><strong>Required:</strong> one column that identifies the shot. The following names are detected automatically (in order of preference):</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>shot_id  shot  pulse  number  exp_number  pulse_id  shot_number
+</span></code></pre></div>
+<p>The column is renamed to <code>shot_id</code> internally regardless of its original name.</p>
+<p>All other columns can be anything. Object columns that can be coerced to numeric are converted automatically. Non-numeric columns are kept and available for coloring and filtering.</p>
+<p><strong>Example schema:</strong></p>
+<table>
+<thead>
+<tr>
+<th>shot_id</th>
+<th>ip_max</th>
+<th>ne_max</th>
+<th>breakdown_type</th>
+<th>reference__number</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>45000</td>
+<td>1.2e6</td>
+<td>3.5e19</td>
+<td>ohmic</td>
+<td>44990</td>
+</tr>
+<tr>
+<td>45001</td>
+<td>1.4e6</td>
+<td>4.1e19</td>
+<td>NBI</td>
+<td>45000</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="per-shot-time-trace-files-data-dir-parquet-backend">Per-shot time trace files (<code>--data-dir</code>, parquet backend)<a class="headerlink" href="#per-shot-time-trace-files-data-dir-parquet-backend" title="Permanent link">&para;</a></h2>
+<p>Each shot lives in its own file under <code>--data-dir</code>:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>&lt;data-dir&gt;/
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>  &lt;any-subdir&gt;/
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    &lt;shot_id&gt;.parquet   # or .csv
+</span></code></pre></div>
+<p><strong>Required columns:</strong></p>
+<ul>
+<li><code>time</code> — time in seconds (filtered to <code>time_window</code>)</li>
+<li>one column per signal listed in <code>signals</code> config</li>
+</ul>
+<p>The <code>&lt;any-subdir&gt;</code> layer is traversed but its name is not significant — all subdirectories are searched for a matching shot file.</p>
+<hr />
+<h2 id="projection-files-projection">Projection files (<code>--projection</code>)<a class="headerlink" href="#projection-files-projection" title="Permanent link">&para;</a></h2>
+<p>A pre-computed 2-D embedding that skips UMAP/PCA entirely. Three formats are accepted:</p>
+<h3 id="numpy-npy">NumPy <code>.npy</code><a class="headerlink" href="#numpy-npy" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Shape <code>(n, 2)</code> — rows matched positionally to the shot data file (must have the same row count).</li>
+<li>Shape <code>(n, 3)</code> — first column is <code>shot_id</code>, next two are coordinates. Joined on <code>shot_id</code>.</li>
+</ul>
+<h3 id="csv-or-parquet">CSV or Parquet<a class="headerlink" href="#csv-or-parquet" title="Permanent link">&para;</a></h3>
+<p>Must contain a shot ID column (same auto-detection as the shot stats file) and at least two coordinate columns. The first two non-shot-ID columns are used as X and Y axes; their names appear as axis labels in the UI.</p>
+<p><strong>Example parquet schema:</strong></p>
+<table>
+<thead>
+<tr>
+<th>shot_id</th>
+<th>umap_x</th>
+<th>umap_y</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>45000</td>
+<td>2.31</td>
+<td>-1.04</td>
+</tr>
+<tr>
+<td>45001</td>
+<td>2.44</td>
+<td>-0.87</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="shap-values-file-shap-data">SHAP values file (<code>--shap-data</code>)<a class="headerlink" href="#shap-values-file-shap-data" title="Permanent link">&para;</a></h2>
+<p>A NetCDF file (<code>.nc</code>) containing a single <code>xarray.DataArray</code> with two named dimensions:</p>
+<ul>
+<li><code>shot_id</code> — integer shot identifiers</li>
+<li><code>feature</code> — feature names (strings)</li>
+<li>one additional dimension for class (the index <code>True</code> / class=1 is used)</li>
+</ul>
+<p>The array is opened with <code>xr.open_dataset</code> and accessed via the default variable key <code>__xarray_dataarray_variable__</code>.</p>
+<p>The shot-to-index mapping is built from the shot statistics file at load time, so <code>shot_id</code> values in the SHAP file must be a subset of those in <code>--shot-data</code>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":[],"search":"../assets/javascripts/workers/search.e2d2d235.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.6e5f0216.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,15 @@
+[project]
+site_name = "NiceShot!"
+site_description = "Interactive tokamak shot dashboard"
+
+[[project.nav]]
+Home = "index.md"
+
+[[project.nav]]
+Quickstart = "quickstart.md"
+
+[[project.nav]]
+Configuration = "configuration.md"
+
+[[project.nav]]
+"Data Formats" = "data-formats.md"
