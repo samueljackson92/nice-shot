@@ -2,6 +2,9 @@
 
 An interactive dashboard for exploring tokamak plasma shot data. Point it at a shot-statistics file and get an instant browser UI for slicing, visualising, and comparing shots.
 
+
+![NiceShot! dashboard](docs/assets/ui.png)
+
 ---
 
 ## Features
@@ -14,7 +17,6 @@ An interactive dashboard for exploring tokamak plasma shot data. Point it at a s
 - **SHAP decision plots** — per-shot feature attribution rendered inline (optional, requires `--shap-data`).
 - **Reference graph** — overlay the full reference-shot lineage on any scatter plot (optional, requires `reference_shot_col` in config).
 
-![NiceShot! dashboard](docs/assets/ui.png)
 
 ---
 
