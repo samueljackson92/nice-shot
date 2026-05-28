@@ -645,6 +645,7 @@ source = { editable = "." }
 dependencies = [
     { name = "dash" },
     { name = "duckdb" },
+    { name = "matplotlib" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "plotly" },
@@ -652,7 +653,10 @@ dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "scikit-learn" },
+    { name = "shap", version = "0.49.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+    { name = "shap", version = "0.51.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
     { name = "umap-learn" },
+    { name = "xarray" },
 ]
 
 [package.optional-dependencies]
@@ -672,6 +676,7 @@ dev = [
 requires-dist = [
     { name = "dash", specifier = ">=4.1.0" },
     { name = "duckdb", specifier = ">=1.5.3" },
+    { name = "matplotlib", specifier = ">=3.10.9" },
     { name = "matplotlib", marker = "extra == 'shap'", specifier = ">=3.10.9" },
     { name = "numpy", specifier = ">=2.4.6" },
     { name = "pandas", specifier = ">=3.0.3" },
@@ -680,8 +685,10 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "scikit-learn", specifier = ">=1.8.0" },
+    { name = "shap", specifier = ">=0.49.1" },
     { name = "shap", marker = "extra == 'shap'", specifier = ">=0.49.1" },
     { name = "umap-learn", specifier = ">=0.5.12" },
+    { name = "xarray", specifier = ">=2026.4.0" },
     { name = "xarray", marker = "extra == 'shap'", specifier = ">=2026.4.0" },
 ]
 provides-extras = ["shap"]

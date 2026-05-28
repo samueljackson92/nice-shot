@@ -1870,7 +1870,10 @@ def update_umap(
             kwargs["color"] = color_col
 
     fig = px.scatter(**kwargs)
-    fig.update_traces(marker=dict(size=5, opacity=0.75))
+    fig.update_traces(
+        marker=dict(size=5, opacity=0.75),
+        unselected=dict(marker=dict(opacity=0.75)),
+    )
     fig.update_layout(**_SCATTER_LAYOUT, uirevision="umap")
     if ref_graph_enabled and selected_shot is not None:
         _add_reference_graph_overlay(fig, plot_df, "umap_x", "umap_y", selected_shot)
@@ -1917,7 +1920,10 @@ def update_pair_plot(
             kwargs["color"] = color_col
 
     fig = px.scatter(**kwargs)
-    fig.update_traces(marker=dict(size=5, opacity=0.75))
+    fig.update_traces(
+        marker=dict(size=5, opacity=0.75),
+        unselected=dict(marker=dict(opacity=0.75)),
+    )
     fig.update_layout(
         **_SCATTER_LAYOUT,
         uirevision=f"{x_col}-{y_col}",
