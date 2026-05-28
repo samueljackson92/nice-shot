@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "NiceShot!"
+abstract: "An interactive dashboard for exploring tokamak plasma shot data. Supports UMAP/PCA projections, pairwise scatter plots, per-shot time traces, configurable filters, and SHAP decision plots."
+version: 0.1.0
+date-released: 2026-05-28
+license: MIT
+authors:
+  - family-names: Jackson
+    given-names: Samuel
+    email: samuel.jackson@ukaea.uk
+    affiliation: "UK Atomic Energy Authority"
+keywords:
+  - tokamak
+  - plasma physics
+  - fusion
+  - data visualisation
+  - dashboard
