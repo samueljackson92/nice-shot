@@ -8,15 +8,16 @@ import hashlib
 import logging
 import os
 import sys
-import yaml
 from pathlib import Path
+
+import dash
+import duckdb
 import numpy as np
 import pandas as pd
-import duckdb
-import dash
-from dash import dcc, html, dash_table, Input, Output, State, ALL, MATCH
 import plotly.express as px
 import plotly.graph_objects as go
+import yaml
+from dash import ALL, Input, Output, State, dash_table, dcc, html
 from plotly.subplots import make_subplots
 
 log = logging.getLogger(__name__)
@@ -31,17 +32,13 @@ _ROOT = os.path.dirname(_HERE)
 if sys.platform == "darwin":
     _CACHE_DIR = Path.home() / "Library" / "Caches" / "niceshot"
 elif sys.platform == "win32":
-    _CACHE_DIR = (
-        Path(os.environ.get("LOCALAPPDATA", Path.home())) / "niceshot" / "cache"
-    )
+    _CACHE_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "niceshot" / "cache"
 else:
-    _CACHE_DIR = (
-        Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "niceshot"
-    )
+    _CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "niceshot"
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 sys.path.insert(0, _HERE)
-from config_schema import AppConfig
+from config_schema import AppConfig  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,12 +46,8 @@ def parse_args() -> argparse.Namespace:
         prog="niceshot",
         description="NiceShot! — interactive tokamak shot dashboard",
     )
-    parser.add_argument(
-        "--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)"
-    )
-    parser.add_argument(
-        "--port", type=int, default=8050, help="Port to listen on (default: 8050)"
-    )
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=8050, help="Port to listen on (default: 8050)")
     parser.add_argument(
         "--debug",
         action=argparse.BooleanOptionalAction,
@@ -142,8 +135,7 @@ else:
 
 if not SHOW_TRACES:
     log.info(
-        "Time-trace panel greyed out — backend='%s', "
-        "data-dir '%s' not found or empty.",
+        "Time-trace panel greyed out — backend='%s', data-dir '%s' not found or empty.",
         BACKEND,
         MASTU_DATA_DIR,
     )
@@ -168,8 +160,7 @@ def _detect_shot_col(frame: pd.DataFrame) -> str:
         if candidate in frame.columns:
             return candidate
     raise ValueError(
-        f"Could not detect shot ID column. "
-        f"Expected one of {_SHOT_ID_CANDIDATES}. Found: {list(frame.columns)}"
+        f"Could not detect shot ID column. Expected one of {_SHOT_ID_CANDIDATES}. Found: {list(frame.columns)}"
     )
 
 
@@ -181,9 +172,7 @@ def _load_shot_data(path: str) -> pd.DataFrame:
     elif _ext in (".parquet", ".pq"):
         _df = pd.read_parquet(path)
     else:
-        raise ValueError(
-            f"Unsupported shot stats format '{_ext}' — expected .csv or .parquet"
-        )
+        raise ValueError(f"Unsupported shot stats format '{_ext}' — expected .csv or .parquet")
 
     # Coerce object columns to numeric where possible; leave non-numeric columns as-is.
     _obj_cols = _df.select_dtypes(include="object").columns
@@ -210,13 +199,9 @@ df = _load_shot_data(SHOT_DATA_PATH)
 
 # Build positional index for SHAP lookup before the UMAP merge drops rows.
 # The .nc file uses 0-based indices matching the original sorted shot order.
-_shot_to_shap_idx: dict[int, int] = {
-    int(s): i for i, s in enumerate(df["shot_id"].values) if pd.notna(s)
-}
+_shot_to_shap_idx: dict[int, int] = {int(s): i for i, s in enumerate(df["shot_id"].values) if pd.notna(s)}
 
-numeric_cols = sorted(
-    c for c in df.select_dtypes(include=[np.number]).columns if c != "shot_id"
-)
+numeric_cols = sorted(c for c in df.select_dtypes(include=[np.number]).columns if c != "shot_id")
 all_cols = sorted(c for c in df.columns if c != "shot_id")
 
 # ---------------------------------------------------------------------------
@@ -230,9 +215,7 @@ def _projection_feature_cols(data: pd.DataFrame) -> list[str]:
         if missing:
             log.warning("[projection] umap_features not found in data: %s", missing)
         return [c for c in UMAP_FEATURES if c in data.columns]
-    return [
-        c for c in data.select_dtypes(include=[np.number]).columns if c != "shot_id"
-    ]
+    return [c for c in data.select_dtypes(include=[np.number]).columns if c != "shot_id"]
 
 
 def _compute_projection(data: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
@@ -260,15 +243,12 @@ def _compute_projection(data: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     # Drop columns that are entirely NaN — they carry no information.
     all_nan_cols = X.columns[X.isna().all()].tolist()
     if all_nan_cols:
-        log.info(
-            "[%s] Dropping %d all-NaN columns: %s", tag, len(all_nan_cols), all_nan_cols
-        )
+        log.info("[%s] Dropping %d all-NaN columns: %s", tag, len(all_nan_cols), all_nan_cols)
         X = X.drop(columns=all_nan_cols)
 
     if X.shape[1] == 0:
         raise ValueError(
-            "All feature columns are entirely NaN. "
-            "Use 'umap_features' in config to specify columns with data."
+            "All feature columns are entirely NaN. Use 'umap_features' in config to specify columns with data."
         )
 
     # Coerce to float so np.isfinite can handle all column dtypes.
@@ -358,9 +338,7 @@ def _load_projection_file(path: str) -> tuple[pd.DataFrame, str, str]:
     if ext == ".npy":
         arr = np.load(path)
         if arr.ndim != 2 or arr.shape[1] < 2:
-            raise ValueError(
-                f"Numpy projection must be 2-D with shape (n, 2) or (n, 3); got {arr.shape}"
-            )
+            raise ValueError(f"Numpy projection must be 2-D with shape (n, 2) or (n, 3); got {arr.shape}")
         if arr.shape[1] >= 3:
             # First column is shot_id, next two are coordinates.
             result = pd.DataFrame(
@@ -398,9 +376,7 @@ def _load_projection_file(path: str) -> tuple[pd.DataFrame, str, str]:
     elif ext in (".parquet", ".pq"):
         emb = pd.read_parquet(path)
     else:
-        raise ValueError(
-            f"Unsupported projection format '{ext}' — expected .npy, .csv, or .parquet"
-        )
+        raise ValueError(f"Unsupported projection format '{ext}' — expected .npy, .csv, or .parquet")
 
     shot_col = _detect_shot_col(emb)
     if shot_col != "shot_id":
@@ -408,9 +384,7 @@ def _load_projection_file(path: str) -> tuple[pd.DataFrame, str, str]:
 
     coord_cols = [c for c in emb.columns if c != "shot_id"]
     if len(coord_cols) < 2:
-        raise ValueError(
-            f"Projection file must have at least 2 coordinate columns; found: {coord_cols}"
-        )
+        raise ValueError(f"Projection file must have at least 2 coordinate columns; found: {coord_cols}")
     x_col, y_col = coord_cols[0], coord_cols[1]
     log.info(
         "Loaded projection from %s: %d rows, axes '%s' / '%s'",
@@ -419,9 +393,7 @@ def _load_projection_file(path: str) -> tuple[pd.DataFrame, str, str]:
         x_col,
         y_col,
     )
-    result = emb[["shot_id", x_col, y_col]].rename(
-        columns={x_col: "umap_x", y_col: "umap_y"}
-    )
+    result = emb[["shot_id", x_col, y_col]].rename(columns={x_col: "umap_x", y_col: "umap_y"})
     return result, x_col, y_col
 
 
@@ -456,9 +428,7 @@ _ref_adjacency: dict[int, list[int]] = {}  # undirected: shot_id → [connected 
 _ref_parent: dict[int, int] = {}  # directed: shot_id → its reference shot
 
 
-def _build_reference_graph(
-    data: pd.DataFrame, col: str
-) -> tuple[dict[int, list[int]], dict[int, int]]:
+def _build_reference_graph(data: pd.DataFrame, col: str) -> tuple[dict[int, list[int]], dict[int, int]]:
     adjacency: dict[int, list[int]] = {}
     parent: dict[int, int] = {}
     _pairs = data[["shot_id", col]].copy()
@@ -484,9 +454,7 @@ if REFERENCE_SHOT_COL and REFERENCE_SHOT_COL in df.columns:
             len(_ref_adjacency),
         )
     else:
-        log.warning(
-            "reference_shot_col='%s' produced no valid edges.", REFERENCE_SHOT_COL
-        )
+        log.warning("reference_shot_col='%s' produced no valid edges.", REFERENCE_SHOT_COL)
 
 # ---------------------------------------------------------------------------
 # SHAP data loading
@@ -541,13 +509,9 @@ def _load_local(shot_id: int) -> pd.DataFrame | None:
     ext = os.path.splitext(path)[1].lower()
     if ext == ".csv":
         result = pd.read_csv(path)
-        return result[
-            (result["time"] >= MIN_TIME) & (result["time"] <= MAX_TIME)
-        ].reset_index(drop=True)
+        return result[(result["time"] >= MIN_TIME) & (result["time"] <= MAX_TIME)].reset_index(drop=True)
     con = duckdb.connect()
-    result = con.execute(
-        f"SELECT * FROM '{path}' WHERE time >= {MIN_TIME} AND time <= {MAX_TIME}"
-    ).df()
+    result = con.execute(f"SELECT * FROM '{path}' WHERE time >= {MIN_TIME} AND time <= {MAX_TIME}").df()
     con.close()
     return result
 
@@ -586,9 +550,7 @@ def _load_remote(shot_id: int, url_fn) -> pd.DataFrame | None:
         return None
 
     result = pd.DataFrame({"time": time_ref, **signal_data})
-    return result[
-        (result["time"] >= MIN_TIME) & (result["time"] <= MAX_TIME)
-    ].reset_index(drop=True)
+    return result[(result["time"] >= MIN_TIME) & (result["time"] <= MAX_TIME)].reset_index(drop=True)
 
 
 def _load_uda(shot_id: int) -> pd.DataFrame | None:
@@ -696,8 +658,9 @@ def make_shap_fig(shot_id: int) -> str | None:
     if idx is None:
         return None
 
-    import io
     import base64
+    import io
+
     import matplotlib
 
     matplotlib.use("Agg")
@@ -733,9 +696,7 @@ def make_shap_fig(shot_id: int) -> str | None:
         ax.tick_params(colors="white", labelsize=7)
         plt.tight_layout()
         buf = io.BytesIO()
-        plt.savefig(
-            buf, format="png", bbox_inches="tight", facecolor="#1a1a2e", dpi=110
-        )
+        plt.savefig(buf, format="png", bbox_inches="tight", facecolor="#1a1a2e", dpi=110)
         plt.close("all")
 
     buf.seek(0)
@@ -765,6 +726,7 @@ def get_reference_graph(shot_id: int) -> set[int]:
 def _ref_shot_color(shot_id: int, min_id: int, max_id: int) -> str:
     """Map a shot_id to a Turbo colorscale colour (old=dark blue, new=dark red)."""
     import plotly.colors as pc
+
     t = (shot_id - min_id) / (max_id - min_id) if max_id > min_id else 0.5
     return pc.sample_colorscale("Turbo", [t])[0]
 
@@ -786,10 +748,7 @@ def _add_reference_graph_overlay(
         return fig
 
     # Position lookup — only shots visible in plot_df
-    pos = {
-        int(r["shot_id"]): (r[x_col], r[y_col])
-        for _, r in plot_df[plot_df["shot_id"].isin(graph)].iterrows()
-    }
+    pos = {int(r["shot_id"]): (r[x_col], r[y_col]) for _, r in plot_df[plot_df["shot_id"].isin(graph)].iterrows()}
 
     visible = set(pos.keys())
     if not visible:
@@ -802,9 +761,7 @@ def _add_reference_graph_overlay(
     related = graph - {selected_shot}
     rel_df = plot_df[plot_df["shot_id"].isin(related)]
     if not rel_df.empty:
-        node_colors = [
-            _ref_shot_color(int(s), min_id, max_id) for s in rel_df["shot_id"]
-        ]
+        node_colors = [_ref_shot_color(int(s), min_id, max_id) for s in rel_df["shot_id"]]
         fig.add_trace(
             go.Scatter(
                 x=rel_df[x_col],
@@ -922,9 +879,7 @@ app.layout = html.Div(
                     "NiceShot!",
                     style=dict(fontSize="20px", fontWeight="600", color=ACCENT),
                 ),
-                html.Span(
-                    id="filter-count-display", style=dict(fontSize="13px", color="#888")
-                ),
+                html.Span(id="filter-count-display", style=dict(fontSize="13px", color="#888")),
             ],
         ),
         # Main content
@@ -945,72 +900,127 @@ app.layout = html.Div(
                         overflow="hidden",
                     ),
                     children=[
-                                html.H3(
-                                    id="traces-title",
-                                    children="Time Traces",
-                                    style=dict(
-                                        margin="0 0 4px 0",
-                                        fontSize="14px",
-                                        color=ACCENT,
-                                    ),
+                        html.H3(
+                            id="traces-title",
+                            children="Time Traces",
+                            style=dict(
+                                margin="0 0 4px 0",
+                                fontSize="14px",
+                                color=ACCENT,
+                            ),
+                        ),
+                        html.Div(
+                            style=dict(fontSize="11px", color="#666", lineHeight="1.6"),
+                            children=[
+                                html.Span(
+                                    f"backend: {BACKEND}",
+                                    style=dict(marginRight="16px"),
                                 ),
-                                html.Div(
+                                html.Span(
+                                    f"shots: {len(df):,}",
+                                    style=dict(marginRight="16px"),
+                                ),
+                                html.Span(
+                                    f"time: {MIN_TIME}–{MAX_TIME} s",
+                                    style=dict(marginRight="16px"),
+                                ),
+                                html.Span(f"signals: {', '.join(TIME_TRACE_SIGNALS)}"),
+                            ],
+                        ),
+                        *(
+                            [
+                                html.Button(
+                                    "Reference graph: OFF",
+                                    id="ref-toggle-btn",
+                                    n_clicks=0,
                                     style=dict(
-                                        fontSize="11px", color="#666", lineHeight="1.6"
+                                        alignSelf="flex-start",
+                                        backgroundColor="#2a2a4a",
+                                        color="#888",
+                                        border="1px solid #3a3a6a",
+                                        padding="4px 12px",
+                                        cursor="pointer",
+                                        borderRadius="4px",
+                                        fontSize="11px",
+                                    ),
+                                )
+                            ]
+                            if SHOW_REF_TOGGLE
+                            else []
+                        ),
+                        dcc.Tabs(
+                            id="left-upper-tabs",
+                            value="traces",
+                            style=dict(flex="1", minHeight="0"),
+                            colors=dict(
+                                border=BORDER,
+                                primary=ACCENT,
+                                background=PANEL_BG,
+                            ),
+                            children=[
+                                dcc.Tab(
+                                    label="Time Traces",
+                                    value="traces",
+                                    disabled=not SHOW_TRACES,
+                                    style=dict(
+                                        color=TEXT,
+                                        backgroundColor=PANEL_BG,
+                                        fontSize="12px",
+                                        padding="4px 10px",
+                                    ),
+                                    selected_style=dict(
+                                        color=ACCENT,
+                                        backgroundColor=DARK_BG,
+                                        borderTop=f"2px solid {ACCENT}",
+                                        fontSize="12px",
+                                        padding="4px 10px",
+                                    ),
+                                    disabled_style=dict(
+                                        color="#444",
+                                        backgroundColor=PANEL_BG,
+                                        fontSize="12px",
+                                        padding="4px 10px",
+                                        cursor="not-allowed",
                                     ),
                                     children=[
-                                        html.Span(
-                                            f"backend: {BACKEND}",
-                                            style=dict(marginRight="16px"),
-                                        ),
-                                        html.Span(
-                                            f"shots: {len(df):,}",
-                                            style=dict(marginRight="16px"),
-                                        ),
-                                        html.Span(
-                                            f"time: {MIN_TIME}–{MAX_TIME} s",
-                                            style=dict(marginRight="16px"),
-                                        ),
-                                        html.Span(
-                                            f"signals: {', '.join(TIME_TRACE_SIGNALS)}"
+                                        dcc.Graph(
+                                            id="traces-plot",
+                                            figure=empty_traces_fig(),
+                                            responsive=True,
+                                            config=dict(
+                                                displayModeBar=True,
+                                                displaylogo=False,
+                                                modeBarButtonsToRemove=[
+                                                    "select2d",
+                                                    "lasso2d",
+                                                ],
+                                            ),
+                                            style=dict(
+                                                height="calc(100vh - 430px)",
+                                                minHeight="220px",
+                                            ),
+                                        )
+                                        if SHOW_TRACES
+                                        else html.Div(
+                                            style=dict(
+                                                height="calc(100vh - 430px)",
+                                                minHeight="220px",
+                                                display="flex",
+                                                alignItems="center",
+                                                justifyContent="center",
+                                            ),
+                                            children=html.Span(
+                                                "No data directory — pass --data-dir to enable time traces",
+                                                style=dict(fontSize="12px", color="#444"),
+                                            ),
                                         ),
                                     ],
                                 ),
                                 *(
                                     [
-                                        html.Button(
-                                            "Reference graph: OFF",
-                                            id="ref-toggle-btn",
-                                            n_clicks=0,
-                                            style=dict(
-                                                alignSelf="flex-start",
-                                                backgroundColor="#2a2a4a",
-                                                color="#888",
-                                                border="1px solid #3a3a6a",
-                                                padding="4px 12px",
-                                                cursor="pointer",
-                                                borderRadius="4px",
-                                                fontSize="11px",
-                                            ),
-                                        )
-                                    ]
-                                    if SHOW_REF_TOGGLE
-                                    else []
-                                ),
-                                dcc.Tabs(
-                                    id="left-upper-tabs",
-                                    value="traces",
-                                    style=dict(flex="1", minHeight="0"),
-                                    colors=dict(
-                                        border=BORDER,
-                                        primary=ACCENT,
-                                        background=PANEL_BG,
-                                    ),
-                                    children=[
                                         dcc.Tab(
-                                            label="Time Traces",
-                                            value="traces",
-                                            disabled=not SHOW_TRACES,
+                                            label="SHAP",
+                                            value="shap",
                                             style=dict(
                                                 color=TEXT,
                                                 backgroundColor=PANEL_BG,
@@ -1024,321 +1034,262 @@ app.layout = html.Div(
                                                 fontSize="12px",
                                                 padding="4px 10px",
                                             ),
-                                            disabled_style=dict(
-                                                color="#444",
-                                                backgroundColor=PANEL_BG,
-                                                fontSize="12px",
-                                                padding="4px 10px",
-                                                cursor="not-allowed",
-                                            ),
                                             children=[
-                                                dcc.Graph(
-                                                    id="traces-plot",
-                                                    figure=empty_traces_fig(),
-                                                    responsive=True,
-                                                    config=dict(
-                                                        displayModeBar=True,
-                                                        displaylogo=False,
-                                                        modeBarButtonsToRemove=[
-                                                            "select2d",
-                                                            "lasso2d",
-                                                        ],
-                                                    ),
+                                                html.Div(
+                                                    id="shap-container",
                                                     style=dict(
                                                         height="calc(100vh - 430px)",
                                                         minHeight="220px",
-                                                    ),
-                                                ) if SHOW_TRACES else html.Div(
-                                                    style=dict(
-                                                        height="calc(100vh - 430px)",
-                                                        minHeight="220px",
-                                                        display="flex",
-                                                        alignItems="center",
-                                                        justifyContent="center",
-                                                    ),
-                                                    children=html.Span(
-                                                        "No data directory — pass --data-dir to enable time traces",
-                                                        style=dict(fontSize="12px", color="#444"),
-                                                    ),
-                                                ),
-                                            ],
-                                        ),
-                                        *(
-                                            [
-                                                dcc.Tab(
-                                                    label="SHAP",
-                                                    value="shap",
-                                                    style=dict(
-                                                        color=TEXT,
-                                                        backgroundColor=PANEL_BG,
-                                                        fontSize="12px",
-                                                        padding="4px 10px",
-                                                    ),
-                                                    selected_style=dict(
-                                                        color=ACCENT,
-                                                        backgroundColor=DARK_BG,
-                                                        borderTop=f"2px solid {ACCENT}",
-                                                        fontSize="12px",
-                                                        padding="4px 10px",
+                                                        overflowY="auto",
+                                                        padding="4px",
                                                     ),
                                                     children=[
-                                                        html.Div(
-                                                            id="shap-container",
+                                                        html.Span(
+                                                            "Click a point to see SHAP values",
                                                             style=dict(
-                                                                height="calc(100vh - 430px)",
-                                                                minHeight="220px",
-                                                                overflowY="auto",
-                                                                padding="4px",
+                                                                fontSize="11px",
+                                                                color="#555",
                                                             ),
-                                                            children=[
-                                                                html.Span(
-                                                                    "Click a point to see SHAP values",
-                                                                    style=dict(
-                                                                        fontSize="11px",
-                                                                        color="#555",
-                                                                    ),
-                                                                )
-                                                            ],
-                                                        ),
-                                                    ],
-                                                )
-                                            ]
-                                            if SHOW_SHAP
-                                            else []
-                                        ),
-                                    ],
-                                ),
-                                html.Div(
-                                    style=dict(flexShrink="0", overflow="hidden"),
-                                    children=[
-                                        dcc.Tabs(
-                                            value="shot-info",
-                                            style=dict(
-                                                marginTop="8px",
-                                                borderTop=BORDER,
-                                                paddingTop="4px",
-                                            ),
-                                            colors=dict(
-                                                border=BORDER,
-                                                primary=ACCENT,
-                                                background=PANEL_BG,
-                                            ),
-                                            children=[
-                                                dcc.Tab(
-                                                    label="Shot Info",
-                                                    value="shot-info",
-                                                    style=dict(
-                                                        color=TEXT,
-                                                        backgroundColor=PANEL_BG,
-                                                        fontSize="12px",
-                                                        padding="4px 10px",
-                                                    ),
-                                                    selected_style=dict(
-                                                        color=ACCENT,
-                                                        backgroundColor=DARK_BG,
-                                                        borderTop=f"2px solid {ACCENT}",
-                                                        fontSize="12px",
-                                                        padding="4px 10px",
-                                                    ),
-                                                    children=[
-                                                        html.Div(
-                                                            id="shot-info-panel",
-                                                            style=dict(
-                                                                overflowY="auto",
-                                                                maxHeight="150px",
-                                                            ),
-                                                        ),
-                                                    ],
-                                                ),
-                                                dcc.Tab(
-                                                    label="Filters",
-                                                    value="filters",
-                                                    style=dict(
-                                                        color=TEXT,
-                                                        backgroundColor=PANEL_BG,
-                                                        fontSize="12px",
-                                                        padding="4px 10px",
-                                                    ),
-                                                    selected_style=dict(
-                                                        color=ACCENT,
-                                                        backgroundColor=DARK_BG,
-                                                        borderTop=f"2px solid {ACCENT}",
-                                                        fontSize="12px",
-                                                        padding="4px 10px",
-                                                    ),
-                                                    children=[
-                                                        html.Div(
-                                                            style=dict(
-                                                                padding="8px 4px",
-                                                                overflowY="auto",
-                                                                maxHeight="150px",
-                                                            ),
-                                                            children=[
-                                                                # Controls row
-                                                                html.Div(
-                                                                    style=dict(
-                                                                        display="flex",
-                                                                        alignItems="center",
-                                                                        gap="16px",
-                                                                        marginBottom="10px",
-                                                                    ),
-                                                                    children=[
-                                                                        html.Div(
-                                                                            [
-                                                                                html.Label(
-                                                                                    "Combine with:",
-                                                                                    style=dict(
-                                                                                        fontSize="11px",
-                                                                                        marginRight="6px",
-                                                                                    ),
-                                                                                ),
-                                                                                dcc.RadioItems(
-                                                                                    id="filter-logic",
-                                                                                    options=[
-                                                                                        {
-                                                                                            "label": "AND",
-                                                                                            "value": "AND",
-                                                                                        },
-                                                                                        {
-                                                                                            "label": "OR",
-                                                                                            "value": "OR",
-                                                                                        },
-                                                                                    ],
-                                                                                    value="AND",
-                                                                                    inline=True,
-                                                                                    labelStyle=dict(
-                                                                                        marginRight="10px",
-                                                                                        fontSize="11px",
-                                                                                        cursor="pointer",
-                                                                                        color=TEXT,
-                                                                                    ),
-                                                                                ),
-                                                                            ],
-                                                                            style=dict(
-                                                                                display="flex",
-                                                                                alignItems="center",
-                                                                            ),
-                                                                        ),
-                                                                        html.Button(
-                                                                            "Clear all",
-                                                                            id="filter-clear-all",
-                                                                            style=dict(
-                                                                                backgroundColor="#2a2a4a",
-                                                                                color=TEXT,
-                                                                                border=BORDER,
-                                                                                padding="3px 8px",
-                                                                                cursor="pointer",
-                                                                                borderRadius="4px",
-                                                                                fontSize="11px",
-                                                                            ),
-                                                                        ),
-                                                                    ],
-                                                                ),
-                                                                # Filter rows
-                                                                *[
-                                                                    html.Div(
-                                                                        style=dict(
-                                                                            display="flex",
-                                                                            alignItems="center",
-                                                                            gap="6px",
-                                                                            marginBottom="6px",
-                                                                        ),
-                                                                        children=[
-                                                                            dcc.Dropdown(
-                                                                                id={
-                                                                                    "type": "filter-col",
-                                                                                    "index": i,
-                                                                                },
-                                                                                options=[
-                                                                                    {
-                                                                                        "label": c,
-                                                                                        "value": c,
-                                                                                    }
-                                                                                    for c in all_cols
-                                                                                ],
-                                                                                value=None,
-                                                                                clearable=True,
-                                                                                placeholder="Column...",
-                                                                                style=dict(
-                                                                                    backgroundColor="#16213e",
-                                                                                    color="#000000",
-                                                                                    width="160px",
-                                                                                    fontSize="11px",
-                                                                                ),
-                                                                            ),
-                                                                            dcc.Dropdown(
-                                                                                id={
-                                                                                    "type": "filter-op",
-                                                                                    "index": i,
-                                                                                },
-                                                                                options=[
-                                                                                    {
-                                                                                        "label": op,
-                                                                                        "value": op,
-                                                                                    }
-                                                                                    for op in OPERATORS
-                                                                                ],
-                                                                                value=">=",
-                                                                                clearable=False,
-                                                                                style=dict(
-                                                                                    backgroundColor="#16213e",
-                                                                                    color="#000000",
-                                                                                    width="70px",
-                                                                                    fontSize="11px",
-                                                                                ),
-                                                                            ),
-                                                                            dcc.Input(
-                                                                                id={
-                                                                                    "type": "filter-val",
-                                                                                    "index": i,
-                                                                                },
-                                                                                type="text",
-                                                                                placeholder="Value...",
-                                                                                value="",
-                                                                                debounce=True,
-                                                                                style=dict(
-                                                                                    backgroundColor="#16213e",
-                                                                                    color=TEXT,
-                                                                                    border=BORDER,
-                                                                                    padding="4px 6px",
-                                                                                    fontSize="11px",
-                                                                                    width="90px",
-                                                                                    borderRadius="4px",
-                                                                                    outline="none",
-                                                                                ),
-                                                                            ),
-                                                                            html.Button(
-                                                                                "x",
-                                                                                id={
-                                                                                    "type": "filter-clear",
-                                                                                    "index": i,
-                                                                                },
-                                                                                style=dict(
-                                                                                    background="none",
-                                                                                    border="none",
-                                                                                    color="#555",
-                                                                                    cursor="pointer",
-                                                                                    fontSize="16px",
-                                                                                    lineHeight="1",
-                                                                                    padding="0 2px",
-                                                                                ),
-                                                                            ),
-                                                                        ],
-                                                                    )
-                                                                    for i in range(
-                                                                        MAX_FILTERS
-                                                                    )
-                                                                ],
-                                                            ],
                                                         )
                                                     ],
                                                 ),
                                             ],
                                         )
-                                    ],
+                                    ]
+                                    if SHOW_SHAP
+                                    else []
                                 ),
                             ],
                         ),
+                        html.Div(
+                            style=dict(flexShrink="0", overflow="hidden"),
+                            children=[
+                                dcc.Tabs(
+                                    value="shot-info",
+                                    style=dict(
+                                        marginTop="8px",
+                                        borderTop=BORDER,
+                                        paddingTop="4px",
+                                    ),
+                                    colors=dict(
+                                        border=BORDER,
+                                        primary=ACCENT,
+                                        background=PANEL_BG,
+                                    ),
+                                    children=[
+                                        dcc.Tab(
+                                            label="Shot Info",
+                                            value="shot-info",
+                                            style=dict(
+                                                color=TEXT,
+                                                backgroundColor=PANEL_BG,
+                                                fontSize="12px",
+                                                padding="4px 10px",
+                                            ),
+                                            selected_style=dict(
+                                                color=ACCENT,
+                                                backgroundColor=DARK_BG,
+                                                borderTop=f"2px solid {ACCENT}",
+                                                fontSize="12px",
+                                                padding="4px 10px",
+                                            ),
+                                            children=[
+                                                html.Div(
+                                                    id="shot-info-panel",
+                                                    style=dict(
+                                                        overflowY="auto",
+                                                        maxHeight="150px",
+                                                    ),
+                                                ),
+                                            ],
+                                        ),
+                                        dcc.Tab(
+                                            label="Filters",
+                                            value="filters",
+                                            style=dict(
+                                                color=TEXT,
+                                                backgroundColor=PANEL_BG,
+                                                fontSize="12px",
+                                                padding="4px 10px",
+                                            ),
+                                            selected_style=dict(
+                                                color=ACCENT,
+                                                backgroundColor=DARK_BG,
+                                                borderTop=f"2px solid {ACCENT}",
+                                                fontSize="12px",
+                                                padding="4px 10px",
+                                            ),
+                                            children=[
+                                                html.Div(
+                                                    style=dict(
+                                                        padding="8px 4px",
+                                                        overflowY="auto",
+                                                        maxHeight="150px",
+                                                    ),
+                                                    children=[
+                                                        # Controls row
+                                                        html.Div(
+                                                            style=dict(
+                                                                display="flex",
+                                                                alignItems="center",
+                                                                gap="16px",
+                                                                marginBottom="10px",
+                                                            ),
+                                                            children=[
+                                                                html.Div(
+                                                                    [
+                                                                        html.Label(
+                                                                            "Combine with:",
+                                                                            style=dict(
+                                                                                fontSize="11px",
+                                                                                marginRight="6px",
+                                                                            ),
+                                                                        ),
+                                                                        dcc.RadioItems(
+                                                                            id="filter-logic",
+                                                                            options=[
+                                                                                {
+                                                                                    "label": "AND",
+                                                                                    "value": "AND",
+                                                                                },
+                                                                                {
+                                                                                    "label": "OR",
+                                                                                    "value": "OR",
+                                                                                },
+                                                                            ],
+                                                                            value="AND",
+                                                                            inline=True,
+                                                                            labelStyle=dict(
+                                                                                marginRight="10px",
+                                                                                fontSize="11px",
+                                                                                cursor="pointer",
+                                                                                color=TEXT,
+                                                                            ),
+                                                                        ),
+                                                                    ],
+                                                                    style=dict(
+                                                                        display="flex",
+                                                                        alignItems="center",
+                                                                    ),
+                                                                ),
+                                                                html.Button(
+                                                                    "Clear all",
+                                                                    id="filter-clear-all",
+                                                                    style=dict(
+                                                                        backgroundColor="#2a2a4a",
+                                                                        color=TEXT,
+                                                                        border=BORDER,
+                                                                        padding="3px 8px",
+                                                                        cursor="pointer",
+                                                                        borderRadius="4px",
+                                                                        fontSize="11px",
+                                                                    ),
+                                                                ),
+                                                            ],
+                                                        ),
+                                                        # Filter rows
+                                                        *[
+                                                            html.Div(
+                                                                style=dict(
+                                                                    display="flex",
+                                                                    alignItems="center",
+                                                                    gap="6px",
+                                                                    marginBottom="6px",
+                                                                ),
+                                                                children=[
+                                                                    dcc.Dropdown(
+                                                                        id={
+                                                                            "type": "filter-col",
+                                                                            "index": i,
+                                                                        },
+                                                                        options=[
+                                                                            {
+                                                                                "label": c,
+                                                                                "value": c,
+                                                                            }
+                                                                            for c in all_cols
+                                                                        ],
+                                                                        value=None,
+                                                                        clearable=True,
+                                                                        placeholder="Column...",
+                                                                        style=dict(
+                                                                            backgroundColor="#16213e",
+                                                                            color="#000000",
+                                                                            width="160px",
+                                                                            fontSize="11px",
+                                                                        ),
+                                                                    ),
+                                                                    dcc.Dropdown(
+                                                                        id={
+                                                                            "type": "filter-op",
+                                                                            "index": i,
+                                                                        },
+                                                                        options=[
+                                                                            {
+                                                                                "label": op,
+                                                                                "value": op,
+                                                                            }
+                                                                            for op in OPERATORS
+                                                                        ],
+                                                                        value=">=",
+                                                                        clearable=False,
+                                                                        style=dict(
+                                                                            backgroundColor="#16213e",
+                                                                            color="#000000",
+                                                                            width="70px",
+                                                                            fontSize="11px",
+                                                                        ),
+                                                                    ),
+                                                                    dcc.Input(
+                                                                        id={
+                                                                            "type": "filter-val",
+                                                                            "index": i,
+                                                                        },
+                                                                        type="text",
+                                                                        placeholder="Value...",
+                                                                        value="",
+                                                                        debounce=True,
+                                                                        style=dict(
+                                                                            backgroundColor="#16213e",
+                                                                            color=TEXT,
+                                                                            border=BORDER,
+                                                                            padding="4px 6px",
+                                                                            fontSize="11px",
+                                                                            width="90px",
+                                                                            borderRadius="4px",
+                                                                            outline="none",
+                                                                        ),
+                                                                    ),
+                                                                    html.Button(
+                                                                        "x",
+                                                                        id={
+                                                                            "type": "filter-clear",
+                                                                            "index": i,
+                                                                        },
+                                                                        style=dict(
+                                                                            background="none",
+                                                                            border="none",
+                                                                            color="#555",
+                                                                            cursor="pointer",
+                                                                            fontSize="16px",
+                                                                            lineHeight="1",
+                                                                            padding="0 2px",
+                                                                        ),
+                                                                    ),
+                                                                ],
+                                                            )
+                                                            for i in range(MAX_FILTERS)
+                                                        ],
+                                                    ],
+                                                )
+                                            ],
+                                        ),
+                                    ],
+                                )
+                            ],
+                        ),
+                    ],
+                ),
                 # -- Right pane: tabs --
                 html.Div(
                     style=dict(
@@ -1385,13 +1336,8 @@ app.layout = html.Div(
                                                 ),
                                                 dcc.Dropdown(
                                                     id="umap-color-col",
-                                                    options=[
-                                                        {"label": c, "value": c}
-                                                        for c in all_cols
-                                                    ],
-                                                    value="breakdown_type"
-                                                    if "breakdown_type" in all_cols
-                                                    else None,
+                                                    options=[{"label": c, "value": c} for c in all_cols],
+                                                    value="breakdown_type" if "breakdown_type" in all_cols else None,
                                                     clearable=True,
                                                     style=DROPDOWN_STYLE,
                                                 ),
@@ -1399,9 +1345,7 @@ app.layout = html.Div(
                                         ),
                                         dcc.Graph(
                                             id="umap-plot",
-                                            config=dict(
-                                                displayModeBar=True, displaylogo=False
-                                            ),
+                                            config=dict(displayModeBar=True, displaylogo=False),
                                             style=dict(height=_SCATTER_H),
                                         ),
                                     ],
@@ -1448,11 +1392,7 @@ app.layout = html.Div(
                                                                         }
                                                                         for c in numeric_cols
                                                                     ],
-                                                                    value=numeric_cols[
-                                                                        0
-                                                                    ]
-                                                                    if numeric_cols
-                                                                    else None,
+                                                                    value=numeric_cols[0] if numeric_cols else None,
                                                                     clearable=False,
                                                                     style=DROPDOWN_STYLE,
                                                                 ),
@@ -1511,11 +1451,8 @@ app.layout = html.Div(
                                                                         }
                                                                         for c in numeric_cols
                                                                     ],
-                                                                    value=numeric_cols[
-                                                                        1
-                                                                    ]
-                                                                    if len(numeric_cols)
-                                                                    > 1
+                                                                    value=numeric_cols[1]
+                                                                    if len(numeric_cols) > 1
                                                                     else None,
                                                                     clearable=False,
                                                                     style=DROPDOWN_STYLE,
@@ -1566,10 +1503,7 @@ app.layout = html.Div(
                                                         ),
                                                         dcc.Dropdown(
                                                             id="pair-color-col",
-                                                            options=[
-                                                                {"label": c, "value": c}
-                                                                for c in all_cols
-                                                            ],
+                                                            options=[{"label": c, "value": c} for c in all_cols],
                                                             value=None,
                                                             clearable=True,
                                                             placeholder="None",
@@ -1581,9 +1515,7 @@ app.layout = html.Div(
                                         ),
                                         dcc.Graph(
                                             id="pair-plot",
-                                            config=dict(
-                                                displayModeBar=True, displaylogo=False
-                                            ),
+                                            config=dict(displayModeBar=True, displaylogo=False),
                                             style=dict(height=_SCATTER_H),
                                         ),
                                     ],
@@ -1631,7 +1563,7 @@ app.layout = html.Div(
                                         ),
                                         dash_table.DataTable(
                                             id="shot-table",
-                                            columns=_table_column_defs,
+                                            columns=_table_column_defs,  # type: ignore
                                             data=df[_table_cols].to_dict("records"),
                                             virtualization=True,
                                             page_action="none",
@@ -1649,7 +1581,7 @@ app.layout = html.Div(
                                                 color=TEXT,
                                                 fontSize="11px",
                                                 padding="3px 10px",
-                                                border=f"1px solid #2a2a4a",
+                                                border="1px solid #2a2a4a",
                                                 minWidth="80px",
                                                 whiteSpace="nowrap",
                                                 overflow="hidden",
@@ -1660,7 +1592,7 @@ app.layout = html.Div(
                                                 color=ACCENT,
                                                 fontWeight="600",
                                                 fontSize="11px",
-                                                border=f"1px solid #2a2a4a",
+                                                border="1px solid #2a2a4a",
                                             ),
                                             style_data_conditional=[],
                                         ),
@@ -1681,9 +1613,7 @@ app.layout = html.Div(
 # ---------------------------------------------------------------------------
 
 
-def _add_selection_highlight(
-    fig: go.Figure, plot_df: pd.DataFrame, x_col: str, y_col: str, selected_shot
-) -> go.Figure:
+def _add_selection_highlight(fig: go.Figure, plot_df: pd.DataFrame, x_col: str, y_col: str, selected_shot) -> go.Figure:
     """Overlay a highlighted marker on the selected shot so it persists across re-renders."""
     if selected_shot is None:
         return fig
@@ -1738,11 +1668,7 @@ def _apply_filter_mask(active_filters: list | None) -> pd.DataFrame:
     Input("filter-logic", "value"),
 )
 def apply_filters(cols, ops, vals, logic):
-    active = [
-        (c, o, v)
-        for c, o, v in zip(cols, ops, vals)
-        if c and o and v is not None and str(v).strip() != ""
-    ]
+    active = [(c, o, v) for c, o, v in zip(cols, ops, vals) if c and o and v is not None and str(v).strip() != ""]
     if not active:
         return None, ""
 
@@ -1780,7 +1706,6 @@ def apply_filters(cols, ops, vals, logic):
 
     shot_ids = df.loc[mask, "shot_id"].tolist()
     n = int(mask.sum())
-    label = "OR".join if logic == "OR" else "AND".join
     return shot_ids, f"{n:,} / {len(df):,} shots shown"
 
 
@@ -1851,9 +1776,7 @@ if SHOW_REF_TOGGLE:
     Input("selected-shot", "data"),
     Input("ref-graph-enabled", "data"),
 )
-def update_umap(
-    color_col: str | None, active_filters, selected_shot, ref_graph_enabled
-) -> go.Figure:
+def update_umap(color_col: str | None, active_filters, selected_shot, ref_graph_enabled) -> go.Figure:
     plot_df = _apply_filter_mask(active_filters)
     kwargs: dict = dict(
         data_frame=plot_df,
@@ -2051,51 +1974,53 @@ app.clientside_callback(
     prevent_initial_call=True,
 )
 
+
 @app.callback(
     Output("shot-info-panel", "children"),
     Input("selected-shot", "data"),
 )
 def update_shot_info(selected_shot):
-        if selected_shot is None:
-            return html.Span(
-                "Click a point to see shot details",
-                style=dict(fontSize="11px", color="#555"),
-            )
-        row = df[df["shot_id"] == selected_shot]
-        if row.empty:
-            return html.Span(
-                f"No data for shot {selected_shot}",
-                style=dict(fontSize="11px", color="#555"),
-            )
-        items = row.iloc[0][_table_cols].items()
-        return html.Table(
-            style=dict(width="100%", borderCollapse="collapse", fontSize="11px"),
-            children=[
-                html.Tr(
-                    style=dict(
-                        borderBottom="1px solid #2a2a4a",
-                        backgroundColor="#16213e" if i % 2 == 0 else PANEL_BG,
-                    ),
-                    children=[
-                        html.Td(
-                            k,
-                            style=dict(
-                                color=ACCENT,
-                                padding="3px 8px",
-                                whiteSpace="nowrap",
-                                fontWeight="600",
-                                width="45%",
-                            ),
-                        ),
-                        html.Td(
-                            f"{v:.4g}" if isinstance(v, float) else str(v),
-                            style=dict(color=TEXT, padding="3px 8px"),
-                        ),
-                    ],
-                )
-                for i, (k, v) in enumerate(items)
-            ],
+    if selected_shot is None:
+        return html.Span(
+            "Click a point to see shot details",
+            style=dict(fontSize="11px", color="#555"),
         )
+    row = df[df["shot_id"] == selected_shot]
+    if row.empty:
+        return html.Span(
+            f"No data for shot {selected_shot}",
+            style=dict(fontSize="11px", color="#555"),
+        )
+    items = row.iloc[0][_table_cols].items()
+    return html.Table(
+        style=dict(width="100%", borderCollapse="collapse", fontSize="11px"),
+        children=[
+            html.Tr(
+                style=dict(
+                    borderBottom="1px solid #2a2a4a",
+                    backgroundColor="#16213e" if i % 2 == 0 else PANEL_BG,
+                ),
+                children=[
+                    html.Td(
+                        k,
+                        style=dict(
+                            color=ACCENT,
+                            padding="3px 8px",
+                            whiteSpace="nowrap",
+                            fontWeight="600",
+                            width="45%",
+                        ),
+                    ),
+                    html.Td(
+                        f"{v:.4g}" if isinstance(v, float) else str(v),
+                        style=dict(color=TEXT, padding="3px 8px"),
+                    ),
+                ],
+            )
+            for i, (k, v) in enumerate(items)
+        ],
+    )
+
 
 if SHOW_TRACES:
 
@@ -2112,13 +2037,9 @@ if SHOW_TRACES:
             shot_df = load_shot_traces(shot_id)
         except Exception as exc:
             log.error("[update_traces] error loading shot %d: %s", shot_id, exc)
-            return empty_traces_fig(
-                f"Error loading shot {shot_id}"
-            ), f"Shot {shot_id} — error"
+            return empty_traces_fig(f"Error loading shot {shot_id}"), f"Shot {shot_id} — error"
         if shot_df is None:
-            return empty_traces_fig(
-                f"No data found for shot {shot_id}"
-            ), f"Shot {shot_id} — not found"
+            return empty_traces_fig(f"No data found for shot {shot_id}"), f"Shot {shot_id} — not found"
         return make_traces_fig(shot_df), f"Shot {shot_id}"
 
     if SHOW_SHAP:

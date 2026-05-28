@@ -32,6 +32,9 @@ shap = [
 
 [dependency-groups]
 dev = [
+    "bump-my-version>=0.32.0",
+    "ruff>=0.11.0",
+    "ty>=0.0.1a14",
     "zensical>=0.0.43",
 ]
 
@@ -40,3 +43,27 @@ package = true
 
 [tool.setuptools.packages.find]
 include = ["nice_shot*"]
+
+[tool.bumpversion]
+current_version = "0.1.0"
+parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
+serialize = ["{major}.{minor}.{patch}"]
+commit = true
+tag = true
+tag_name = "v{new_version}"
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+search = 'version = "{current_version}"'
+replace = 'version = "{new_version}"'
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ty.environment]
+python-version = "3.12"
+extra-paths = ["nice_shot"]

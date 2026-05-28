@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Literal
+
 from pydantic import BaseModel, model_validator
 
 
@@ -12,8 +13,7 @@ class TimeWindow(BaseModel):
     def check_order(self) -> TimeWindow:
         if self.min_time >= self.max_time:
             raise ValueError(
-                f"time_window.min_time ({self.min_time}) must be less than "
-                f"time_window.max_time ({self.max_time})"
+                f"time_window.min_time ({self.min_time}) must be less than time_window.max_time ({self.max_time})"
             )
         return self
 
