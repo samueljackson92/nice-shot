@@ -1098,11 +1098,9 @@ _CLUSTER_INPUT_STYLE = dict(
 )
 
 
-def _cluster_param_block(label: str, control) -> html.Div:
-    return html.Div([
-        html.Label(label, style=_CLUSTER_LABEL_STYLE),
-        control,
-    ])
+def _cluster_param_block(label: str, control, block_id: str | None = None) -> html.Div:
+    kwargs = {"id": block_id} if block_id else {}
+    return html.Div([html.Label(label, style=_CLUSTER_LABEL_STYLE), control], **kwargs)
 
 # Scatter Graph height — fills viewport minus header + tab bar + controls + padding
 _SCATTER_H = "calc(100vh - 183px)"
@@ -1562,6 +1560,7 @@ app.layout = html.Div(
                                                                         step=1,
                                                                         style=_CLUSTER_INPUT_STYLE,
                                                                     ),
+                                                                    block_id="cluster-n-block",
                                                                 ),
                                                                 _cluster_param_block(
                                                                     "eps",
@@ -1573,6 +1572,7 @@ app.layout = html.Div(
                                                                         step=0.05,
                                                                         style=_CLUSTER_INPUT_STYLE,
                                                                     ),
+                                                                    block_id="cluster-eps-block",
                                                                 ),
                                                                 _cluster_param_block(
                                                                     "min_samples",
@@ -1584,6 +1584,7 @@ app.layout = html.Div(
                                                                         step=1,
                                                                         style=_CLUSTER_INPUT_STYLE,
                                                                     ),
+                                                                    block_id="cluster-min-samples-block",
                                                                 ),
                                                             ],
                                                         ),
@@ -1718,6 +1719,7 @@ app.layout = html.Div(
                                                                         step=1,
                                                                         style=_CLUSTER_INPUT_STYLE,
                                                                     ),
+                                                                    block_id="outlier-n-neighbors-block",
                                                                 ),
                                                             ],
                                                         ),
@@ -2946,6 +2948,34 @@ def download_table(n_clicks, cluster_labels, cluster_names):
 
         export["cluster_name"] = export["cluster_id"].apply(_cname)
     return dcc.send_data_frame(export.to_csv, "niceshot_export.csv", index=False)
+
+
+# ---------------------------------------------------------------------------
+# Parameter visibility callbacks
+# ---------------------------------------------------------------------------
+
+_SHOW = {}
+_HIDE = {"display": "none"}
+
+
+@app.callback(
+    Output("cluster-n-block", "style"),
+    Output("cluster-eps-block", "style"),
+    Output("cluster-min-samples-block", "style"),
+    Input("cluster-algorithm", "value"),
+)
+def toggle_cluster_params(algorithm):
+    if algorithm == "dbscan":
+        return _HIDE, _SHOW, _SHOW
+    return _SHOW, _HIDE, _HIDE  # kmeans / agglomerative
+
+
+@app.callback(
+    Output("outlier-n-neighbors-block", "style"),
+    Input("outlier-algorithm", "value"),
+)
+def toggle_outlier_params(algorithm):
+    return _SHOW if algorithm == "lof" else _HIDE
 
 
 # ---------------------------------------------------------------------------
