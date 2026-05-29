@@ -2955,7 +2955,7 @@ def download_table(n_clicks, cluster_labels, cluster_names):
 @app.callback(
     Output("outlier-labels", "data"),
     Output("outlier-status", "children"),
-    Output("umap-color-col", "value"),
+    Output("umap-color-col", "value", allow_duplicate=True),
     Input("run-outlier-btn", "n_clicks"),
     State("outlier-algorithm", "value"),
     State("outlier-features", "value"),
