@@ -3110,46 +3110,58 @@ def render_outlier_traces(outlier_traces_data):
     Input("active-filters", "data"),
 )
 def update_correlation(features, active_filters):
-    if not features or len(features) < 2:
+    def _empty(msg):
         fig = go.Figure()
         fig.add_annotation(
-            text="Select at least 2 features",
-            xref="paper", yref="paper", x=0.5, y=0.5,
+            text=msg, xref="paper", yref="paper", x=0.5, y=0.5,
             showarrow=False, font=dict(size=14, color="#aaa"),
         )
-        fig.update_layout(paper_bgcolor=DARK_BG, plot_bgcolor="#16213e", margin=dict(l=50, r=30, t=40, b=50))
+        fig.update_layout(
+            paper_bgcolor=DARK_BG, plot_bgcolor="#16213e",
+            margin=dict(l=50, r=30, t=40, b=50),
+        )
         return fig
 
-    plot_df = _apply_filter_mask(active_filters)
-    valid = [f for f in features if f in plot_df.columns]
-    corr = plot_df[valid].corr()
+    if not features or len(features) < 2:
+        return _empty("Select at least 2 features")
 
-    fig = px.imshow(
-        corr,
-        color_continuous_scale="RdBu_r",
+    plot_df = _apply_filter_mask(active_filters)
+    valid = [f for f in features if f in plot_df.columns and pd.api.types.is_numeric_dtype(plot_df[f])]
+    if len(valid) < 2:
+        return _empty("Need at least 2 numeric features")
+
+    corr = plot_df[valid].corr().fillna(0)
+    labels = corr.columns.tolist()
+    z = corr.values.tolist()
+    text = [[f"{corr.iloc[i, j]:.2f}" for j in range(len(labels))] for i in range(len(labels))]
+
+    fig = go.Figure(go.Heatmap(
+        z=z,
+        x=labels,
+        y=labels,
+        text=text,
+        texttemplate="%{text}",
+        textfont=dict(size=10),
+        colorscale="RdBu_r",
         zmin=-1,
         zmax=1,
-        text_auto=".2f",
-        aspect="auto",
-    )
-    fig.update_traces(textfont=dict(size=10))
+        colorbar=dict(
+            title=dict(text="r", font=dict(color=TEXT)),
+            tickvals=[-1, -0.5, 0, 0.5, 1],
+            ticktext=["-1", "-0.5", "0", "0.5", "1"],
+            tickfont=dict(color=TEXT),
+            bgcolor=PANEL_BG,
+            bordercolor="#2a2a4a",
+        ),
+    ))
     fig.update_layout(
         paper_bgcolor=DARK_BG,
         plot_bgcolor="#16213e",
         font=dict(color=TEXT, size=11),
         margin=dict(l=120, r=20, t=40, b=120),
         autosize=True,
-        coloraxis_colorbar=dict(
-            title="r",
-            tickvals=[-1, -0.5, 0, 0.5, 1],
-            ticktext=["-1", "-0.5", "0", "0.5", "1"],
-            bgcolor=PANEL_BG,
-            bordercolor="#2a2a4a",
-            tickfont=dict(color=TEXT),
-            titlefont=dict(color=TEXT),
-        ),
-        xaxis=dict(tickangle=-45, tickfont=dict(size=10), gridcolor="#2a2a4a"),
-        yaxis=dict(tickfont=dict(size=10), gridcolor="#2a2a4a"),
+        xaxis=dict(tickangle=-45, tickfont=dict(size=10), side="bottom"),
+        yaxis=dict(tickfont=dict(size=10), autorange="reversed"),
     )
     return fig
 
