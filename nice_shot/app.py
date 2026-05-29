@@ -413,6 +413,11 @@ else:
     UMAP_X_LABEL, UMAP_Y_LABEL = "Dim 1", "Dim 2"
 
 _table_cols = [c for c in df.columns if c not in ("umap_x", "umap_y")]
+_CLUSTER_COLOR_VALUE = "__cluster__"
+_color_col_options = [{"label": c, "value": c} for c in all_cols] + [
+    {"label": "Cluster", "value": _CLUSTER_COLOR_VALUE}
+]
+
 _table_column_defs = [
     {"name": c, "id": c, "type": "numeric", "format": {"specifier": ".4g"}}
     if pd.api.types.is_float_dtype(df[c])
@@ -704,6 +709,133 @@ def make_shap_fig(shot_id: int) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Clustering helpers
+# ---------------------------------------------------------------------------
+
+_CLUSTER_ALGORITHMS = [
+    {"label": "K-Means", "value": "kmeans"},
+    {"label": "DBSCAN", "value": "dbscan"},
+    {"label": "Agglomerative", "value": "agglomerative"},
+]
+
+
+def _run_clustering(algorithm: str, features: list[str], n_clusters: int, eps: float, min_samples: int) -> dict:
+    """Fit clustering on selected feature columns. Returns {str(shot_id): cluster_id}."""
+    from sklearn.preprocessing import StandardScaler
+
+    valid = [f for f in features if f in df.columns]
+    if not valid:
+        return {}
+    sub = df[["shot_id"] + valid].dropna()
+    if sub.empty:
+        return {}
+    X = StandardScaler().fit_transform(sub[valid].values.astype(float))
+    if algorithm == "kmeans":
+        from sklearn.cluster import KMeans
+        labels = KMeans(n_clusters=int(n_clusters), random_state=42, n_init="auto").fit_predict(X)
+    elif algorithm == "dbscan":
+        from sklearn.cluster import DBSCAN
+        labels = DBSCAN(eps=float(eps), min_samples=int(min_samples)).fit_predict(X)
+    elif algorithm == "agglomerative":
+        from sklearn.cluster import AgglomerativeClustering
+        labels = AgglomerativeClustering(n_clusters=int(n_clusters)).fit_predict(X)
+    else:
+        return {}
+    return {str(int(sid)): int(lbl) for sid, lbl in zip(sub["shot_id"].values, labels)}
+
+
+def _apply_cluster_color(plot_df: pd.DataFrame, cluster_labels: dict, cluster_names: dict) -> tuple[pd.DataFrame, str]:
+    """Merge cluster labels into plot_df for scatter colouring. Returns (enriched_df, color_col)."""
+    label_map = {int(k): v for k, v in cluster_labels.items()}
+    enriched = plot_df.copy()
+    enriched["_cluster_id"] = enriched["shot_id"].map(label_map)
+    enriched = enriched[enriched["_cluster_id"].notna()].copy()
+    enriched["_cluster_id"] = enriched["_cluster_id"].astype(int)
+    enriched["cluster"] = enriched["_cluster_id"].apply(
+        lambda cid: (cluster_names or {}).get(str(cid)) or (f"Cluster {cid}" if cid >= 0 else "Noise")
+    )
+    return enriched.drop(columns=["_cluster_id"]), "cluster"
+
+
+def make_cluster_centroid_fig(cluster_labels: dict, cluster_names: dict) -> go.Figure:
+    """Average time traces per cluster and return a multi-cluster subplot figure."""
+    if not cluster_labels:
+        return empty_traces_fig("Run clustering to enable centroid traces")
+    if not SHOW_TRACES:
+        return empty_traces_fig("No data directory — pass --data-dir to enable time traces")
+
+    cluster_shots: dict[int, list[int]] = {}
+    for sid_str, cid in cluster_labels.items():
+        if int(cid) < 0:
+            continue
+        cluster_shots.setdefault(int(cid), []).append(int(sid_str))
+
+    if not cluster_shots:
+        return empty_traces_fig("No valid clusters found (DBSCAN noise only?)")
+
+    MAX_PER_CLUSTER = 50
+    cluster_dfs: dict[int, pd.DataFrame] = {}
+    for cid, shot_ids in sorted(cluster_shots.items()):
+        dfs = []
+        for sid in shot_ids[:MAX_PER_CLUSTER]:
+            try:
+                sdf = load_shot_traces(sid)
+                if sdf is not None and not sdf.empty:
+                    dfs.append(sdf)
+            except Exception:
+                pass
+        if not dfs:
+            continue
+        time_ref = dfs[0]["time"].values
+        averaged: dict[str, np.ndarray] = {"time": time_ref}
+        for sig in TIME_TRACE_SIGNALS:
+            vals = [
+                np.interp(time_ref, d["time"].values, d[sig].fillna(0).values)
+                for d in dfs
+                if sig in d.columns and d[sig].notna().any()
+            ]
+            if vals:
+                averaged[sig] = np.nanmean(vals, axis=0)
+        cluster_dfs[cid] = pd.DataFrame(averaged)
+
+    if not cluster_dfs:
+        return empty_traces_fig("Could not load traces for any cluster")
+
+    available = [s for s in TIME_TRACE_SIGNALS if any(s in cdf.columns for cdf in cluster_dfs.values())]
+    if not available:
+        return empty_traces_fig("No matching signals in loaded traces")
+
+    colors = px.colors.qualitative.Plotly
+    n = len(available)
+    fig = make_subplots(rows=n, cols=1, shared_xaxes=True, vertical_spacing=0.04, subplot_titles=available)
+    for cid, cdf in sorted(cluster_dfs.items()):
+        name = (cluster_names or {}).get(str(cid)) or f"Cluster {cid}"
+        color = colors[cid % len(colors)]
+        for i, sig in enumerate(available):
+            if sig not in cdf.columns:
+                continue
+            mask = cdf[sig].notna()
+            fig.add_trace(
+                go.Scatter(
+                    x=cdf.loc[mask, "time"],
+                    y=cdf.loc[mask, sig],
+                    name=name,
+                    mode="lines",
+                    line=dict(color=color, width=2),
+                    legendgroup=f"c{cid}",
+                    showlegend=(i == 0),
+                ),
+                row=i + 1, col=1,
+            )
+        fig.update_yaxes(
+            title_text=sig, title_font=dict(size=11), row=i + 1, col=1, gridcolor="#333", zerolinecolor="#555"
+        )
+    fig.update_xaxes(title_text="Time (s)", row=n, col=1, gridcolor="#333", zerolinecolor="#555")
+    fig.update_layout(**_trace_layout(), showlegend=True, legend=dict(bgcolor="rgba(0,0,0,0)"))
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # Reference-graph helpers
 # ---------------------------------------------------------------------------
 
@@ -824,6 +956,25 @@ DROPDOWN_STYLE = dict(
     fontSize="12px",
 )
 
+_CLUSTER_LABEL_STYLE = dict(fontSize="10px", color="#888", display="block", marginBottom="2px")
+_CLUSTER_INPUT_STYLE = dict(
+    backgroundColor="#16213e",
+    color=TEXT,
+    border=BORDER,
+    padding="4px 6px",
+    fontSize="11px",
+    width="64px",
+    borderRadius="4px",
+    outline="none",
+)
+
+
+def _cluster_param_block(label: str, control) -> html.Div:
+    return html.Div([
+        html.Label(label, style=_CLUSTER_LABEL_STYLE),
+        control,
+    ])
+
 # Scatter Graph height — fills viewport minus header + tab bar + controls + padding
 _SCATTER_H = "calc(100vh - 183px)"
 
@@ -864,6 +1015,9 @@ app.layout = html.Div(
         dcc.Store(id="selected-shot"),
         dcc.Store(id="_table_scroll_sink"),
         dcc.Store(id="ref-graph-enabled", data=False),
+        dcc.Store(id="cluster-labels", data=None),
+        dcc.Store(id="cluster-names", data={}),
+        dcc.Download(id="table-download"),
         # Header
         html.Div(
             style=dict(
@@ -1059,6 +1213,69 @@ app.layout = html.Div(
                                     if SHOW_SHAP
                                     else []
                                 ),
+                                dcc.Tab(
+                                    label="Cluster Traces",
+                                    value="cluster-traces",
+                                    style=dict(
+                                        color=TEXT,
+                                        backgroundColor=PANEL_BG,
+                                        fontSize="12px",
+                                        padding="4px 10px",
+                                    ),
+                                    selected_style=dict(
+                                        color=ACCENT,
+                                        backgroundColor=DARK_BG,
+                                        borderTop=f"2px solid {ACCENT}",
+                                        fontSize="12px",
+                                        padding="4px 10px",
+                                    ),
+                                    children=[
+                                        html.Div(
+                                            style=dict(
+                                                display="flex",
+                                                alignItems="center",
+                                                gap="8px",
+                                                padding="6px 4px 6px",
+                                            ),
+                                            children=[
+                                                html.Button(
+                                                    "Compute centroid traces",
+                                                    id="compute-centroid-btn",
+                                                    n_clicks=0,
+                                                    style=dict(
+                                                        backgroundColor="#2a2a4a",
+                                                        color=TEXT,
+                                                        border=BORDER,
+                                                        padding="4px 12px",
+                                                        cursor="pointer",
+                                                        borderRadius="4px",
+                                                        fontSize="11px",
+                                                    ),
+                                                ),
+                                                html.Span(
+                                                    id="centroid-status",
+                                                    style=dict(fontSize="11px", color="#888"),
+                                                ),
+                                            ],
+                                        ),
+                                        dcc.Loading(
+                                            type="circle",
+                                            color=ACCENT,
+                                            children=dcc.Graph(
+                                                id="cluster-traces-plot",
+                                                figure=empty_traces_fig(
+                                                    "Run clustering, then click 'Compute centroid traces'"
+                                                ),
+                                                responsive=True,
+                                                config=dict(displayModeBar=True, displaylogo=False),
+                                                style=dict(
+                                                    height="calc(100vh - 465px)",
+                                                    minHeight="200px",
+                                                ),
+                                            ),
+                                        ),
+                                    ],
+                                ),
                             ],
                         ),
                         html.Div(
@@ -1100,6 +1317,152 @@ app.layout = html.Div(
                                                         overflowY="auto",
                                                         maxHeight="150px",
                                                     ),
+                                                ),
+                                            ],
+                                        ),
+                                        dcc.Tab(
+                                            label="Clustering",
+                                            value="clustering",
+                                            style=dict(
+                                                color=TEXT,
+                                                backgroundColor=PANEL_BG,
+                                                fontSize="12px",
+                                                padding="4px 10px",
+                                            ),
+                                            selected_style=dict(
+                                                color=ACCENT,
+                                                backgroundColor=DARK_BG,
+                                                borderTop=f"2px solid {ACCENT}",
+                                                fontSize="12px",
+                                                padding="4px 10px",
+                                            ),
+                                            children=[
+                                                html.Div(
+                                                    style=dict(
+                                                        padding="8px 4px",
+                                                        overflowY="auto",
+                                                        maxHeight="150px",
+                                                    ),
+                                                    children=[
+                                                        # Row 1: algorithm + params
+                                                        html.Div(
+                                                            style=dict(
+                                                                display="flex",
+                                                                gap="8px",
+                                                                marginBottom="6px",
+                                                                flexWrap="wrap",
+                                                                alignItems="flex-end",
+                                                            ),
+                                                            children=[
+                                                                _cluster_param_block(
+                                                                    "Algorithm",
+                                                                    dcc.Dropdown(
+                                                                        id="cluster-algorithm",
+                                                                        options=_CLUSTER_ALGORITHMS,
+                                                                        value="kmeans",
+                                                                        clearable=False,
+                                                                        style=dict(
+                                                                            backgroundColor="#16213e",
+                                                                            color="#000",
+                                                                            width="120px",
+                                                                            fontSize="11px",
+                                                                        ),
+                                                                    ),
+                                                                ),
+                                                                _cluster_param_block(
+                                                                    "n_clusters",
+                                                                    dcc.Input(
+                                                                        id="cluster-n",
+                                                                        type="number",
+                                                                        value=5,
+                                                                        min=2,
+                                                                        max=50,
+                                                                        step=1,
+                                                                        style=_CLUSTER_INPUT_STYLE,
+                                                                    ),
+                                                                ),
+                                                                _cluster_param_block(
+                                                                    "eps",
+                                                                    dcc.Input(
+                                                                        id="cluster-eps",
+                                                                        type="number",
+                                                                        value=0.5,
+                                                                        min=0.01,
+                                                                        step=0.05,
+                                                                        style=_CLUSTER_INPUT_STYLE,
+                                                                    ),
+                                                                ),
+                                                                _cluster_param_block(
+                                                                    "min_samples",
+                                                                    dcc.Input(
+                                                                        id="cluster-min-samples",
+                                                                        type="number",
+                                                                        value=5,
+                                                                        min=1,
+                                                                        step=1,
+                                                                        style=_CLUSTER_INPUT_STYLE,
+                                                                    ),
+                                                                ),
+                                                            ],
+                                                        ),
+                                                        # Row 2: feature selection
+                                                        html.Div(
+                                                            style=dict(marginBottom="6px"),
+                                                            children=[
+                                                                html.Label(
+                                                                    "Features",
+                                                                    style=_CLUSTER_LABEL_STYLE,
+                                                                ),
+                                                                dcc.Dropdown(
+                                                                    id="cluster-features",
+                                                                    options=[
+                                                                        {"label": c, "value": c}
+                                                                        for c in numeric_cols
+                                                                    ],
+                                                                    value=(UMAP_FEATURES or numeric_cols)[:8],
+                                                                    multi=True,
+                                                                    placeholder="Select feature columns...",
+                                                                    style=dict(
+                                                                        backgroundColor="#16213e",
+                                                                        color="#000",
+                                                                        fontSize="11px",
+                                                                    ),
+                                                                ),
+                                                            ],
+                                                        ),
+                                                        # Row 3: run button + status
+                                                        html.Div(
+                                                            style=dict(
+                                                                display="flex",
+                                                                alignItems="center",
+                                                                gap="8px",
+                                                                marginBottom="6px",
+                                                            ),
+                                                            children=[
+                                                                html.Button(
+                                                                    "Run clustering",
+                                                                    id="run-cluster-btn",
+                                                                    n_clicks=0,
+                                                                    style=dict(
+                                                                        backgroundColor=ACCENT,
+                                                                        color="#000",
+                                                                        border="none",
+                                                                        padding="4px 12px",
+                                                                        cursor="pointer",
+                                                                        borderRadius="4px",
+                                                                        fontSize="11px",
+                                                                        fontWeight="600",
+                                                                    ),
+                                                                ),
+                                                                html.Span(
+                                                                    id="cluster-status",
+                                                                    style=dict(fontSize="11px", color="#888"),
+                                                                ),
+                                                            ],
+                                                        ),
+                                                        # Cluster name inputs (rendered dynamically)
+                                                        html.Div(id="cluster-name-inputs"),
+                                                    ],
                                                 ),
                                             ],
                                         ),
@@ -1336,7 +1699,7 @@ app.layout = html.Div(
                                                 ),
                                                 dcc.Dropdown(
                                                     id="umap-color-col",
-                                                    options=[{"label": c, "value": c} for c in all_cols],
+                                                    options=_color_col_options,
                                                     value="breakdown_type" if "breakdown_type" in all_cols else None,
                                                     clearable=True,
                                                     style=DROPDOWN_STYLE,
@@ -1503,7 +1866,7 @@ app.layout = html.Div(
                                                         ),
                                                         dcc.Dropdown(
                                                             id="pair-color-col",
-                                                            options=[{"label": c, "value": c} for c in all_cols],
+                                                            options=_color_col_options,
                                                             value=None,
                                                             clearable=True,
                                                             placeholder="None",
@@ -1557,6 +1920,21 @@ app.layout = html.Div(
                                                         fontSize="12px",
                                                         width="160px",
                                                         outline="none",
+                                                    ),
+                                                ),
+                                                html.Button(
+                                                    "Download CSV",
+                                                    id="download-table-btn",
+                                                    n_clicks=0,
+                                                    style=dict(
+                                                        marginLeft="auto",
+                                                        backgroundColor="#2a2a4a",
+                                                        color=TEXT,
+                                                        border=BORDER,
+                                                        padding="4px 12px",
+                                                        cursor="pointer",
+                                                        borderRadius="4px",
+                                                        fontSize="11px",
                                                     ),
                                                 ),
                                             ],
@@ -1775,8 +2153,12 @@ if SHOW_REF_TOGGLE:
     Input("active-filters", "data"),
     Input("selected-shot", "data"),
     Input("ref-graph-enabled", "data"),
+    Input("cluster-labels", "data"),
+    State("cluster-names", "data"),
 )
-def update_umap(color_col: str | None, active_filters, selected_shot, ref_graph_enabled) -> go.Figure:
+def update_umap(
+    color_col, active_filters, selected_shot, ref_graph_enabled, cluster_labels, cluster_names
+) -> go.Figure:
     plot_df = _apply_filter_mask(active_filters)
     kwargs: dict = dict(
         data_frame=plot_df,
@@ -1786,7 +2168,11 @@ def update_umap(color_col: str | None, active_filters, selected_shot, ref_graph_
         hover_name="shot_id",
         labels={"umap_x": UMAP_X_LABEL, "umap_y": UMAP_Y_LABEL},
     )
-    if color_col and color_col in plot_df.columns:
+    if color_col == _CLUSTER_COLOR_VALUE and cluster_labels:
+        enriched, col = _apply_cluster_color(plot_df, cluster_labels, cluster_names or {})
+        kwargs["data_frame"] = enriched
+        kwargs["color"] = col
+    elif color_col and color_col in plot_df.columns:
         valid = plot_df[color_col].notna()
         if valid.any():
             kwargs["data_frame"] = plot_df[valid]
@@ -1814,16 +2200,20 @@ def update_umap(color_col: str | None, active_filters, selected_shot, ref_graph_
     Input("active-filters", "data"),
     Input("selected-shot", "data"),
     Input("ref-graph-enabled", "data"),
+    Input("cluster-labels", "data"),
+    State("cluster-names", "data"),
 )
 def update_pair_plot(
-    x_col: str | None,
-    y_col: str | None,
-    color_col: str | None,
-    x_scale: str,
-    y_scale: str,
+    x_col,
+    y_col,
+    color_col,
+    x_scale,
+    y_scale,
     active_filters,
     selected_shot,
     ref_graph_enabled,
+    cluster_labels,
+    cluster_names,
 ) -> go.Figure:
     if not x_col or not y_col:
         return go.Figure()
@@ -1836,7 +2226,11 @@ def update_pair_plot(
         custom_data=["shot_id"],
         hover_name="shot_id",
     )
-    if color_col and color_col in plot_df.columns:
+    if color_col == _CLUSTER_COLOR_VALUE and cluster_labels:
+        enriched, col = _apply_cluster_color(plot_df, cluster_labels, cluster_names or {})
+        kwargs["data_frame"] = enriched
+        kwargs["color"] = col
+    elif color_col and color_col in plot_df.columns:
         valid = plot_df[color_col].notna()
         if valid.any():
             kwargs["data_frame"] = plot_df[valid]
@@ -2064,6 +2458,150 @@ if SHOW_TRACES:
                 src=f"data:image/png;base64,{img_b64}",
                 style=dict(width="100%", height="auto"),
             )
+
+
+# ---------------------------------------------------------------------------
+# Clustering callbacks
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("cluster-labels", "data"),
+    Output("cluster-status", "children"),
+    Input("run-cluster-btn", "n_clicks"),
+    State("cluster-algorithm", "value"),
+    State("cluster-features", "value"),
+    State("cluster-n", "value"),
+    State("cluster-eps", "value"),
+    State("cluster-min-samples", "value"),
+    prevent_initial_call=True,
+)
+def run_clustering(n_clicks, algorithm, features, n_clusters, eps, min_samples):
+    if not features:
+        return dash.no_update, "Select at least one feature"
+    try:
+        labels = _run_clustering(
+            algorithm=algorithm or "kmeans",
+            features=list(features),
+            n_clusters=int(n_clusters or 5),
+            eps=float(eps or 0.5),
+            min_samples=int(min_samples or 5),
+        )
+    except Exception as exc:
+        log.error("[clustering] %s", exc)
+        return dash.no_update, f"Error: {exc}"
+    if not labels:
+        return None, "No shots clustered — check features"
+    unique = sorted(set(labels.values()))
+    n_valid = sum(1 for v in unique if v >= 0)
+    noise = sum(1 for v in labels.values() if v < 0)
+    msg = f"{n_valid} cluster(s) across {len(labels):,} shots"
+    if noise:
+        msg += f" · {noise:,} noise"
+    return labels, msg
+
+
+@app.callback(
+    Output("cluster-name-inputs", "children"),
+    Input("cluster-labels", "data"),
+)
+def render_cluster_name_inputs(cluster_labels):
+    if not cluster_labels:
+        return []
+    counts: dict[int, int] = {}
+    for v in cluster_labels.values():
+        counts[v] = counts.get(v, 0) + 1
+    valid_ids = sorted(cid for cid in counts if cid >= 0)
+    noise = counts.get(-1, 0)
+    rows = []
+    if noise:
+        rows.append(html.Div(f"Noise: {noise:,} shots", style=dict(fontSize="10px", color="#666", marginBottom="4px")))
+    rows.append(html.Div("Label clusters:", style=dict(fontSize="10px", color="#888", marginBottom="4px")))
+    for cid in valid_ids:
+        rows.append(
+            html.Div(
+                style=dict(display="flex", alignItems="center", gap="6px", marginBottom="4px"),
+                children=[
+                    html.Span(
+                        f"C{cid} ({counts[cid]:,})",
+                        style=dict(fontSize="10px", color=ACCENT, minWidth="65px", fontVariantNumeric="tabular-nums"),
+                    ),
+                    dcc.Input(
+                        id={"type": "cluster-name", "index": cid},
+                        type="text",
+                        placeholder=f"Cluster {cid}",
+                        debounce=True,
+                        style=dict(
+                            backgroundColor="#16213e",
+                            color=TEXT,
+                            border=BORDER,
+                            padding="3px 6px",
+                            fontSize="11px",
+                            width="130px",
+                            borderRadius="4px",
+                            outline="none",
+                        ),
+                    ),
+                ],
+            )
+        )
+    return rows
+
+
+@app.callback(
+    Output("cluster-names", "data"),
+    Input({"type": "cluster-name", "index": ALL}, "value"),
+    State("cluster-labels", "data"),
+    prevent_initial_call=True,
+)
+def update_cluster_names(name_values, cluster_labels):
+    if not cluster_labels:
+        return {}
+    valid_ids = sorted(cid for cid in set(cluster_labels.values()) if cid >= 0)
+    return {
+        str(cid): (name_values[i] or f"Cluster {cid}")
+        for i, cid in enumerate(valid_ids)
+        if i < len(name_values)
+    }
+
+
+@app.callback(
+    Output("cluster-traces-plot", "figure"),
+    Output("centroid-status", "children"),
+    Input("compute-centroid-btn", "n_clicks"),
+    State("cluster-labels", "data"),
+    State("cluster-names", "data"),
+    prevent_initial_call=True,
+)
+def update_cluster_traces(n_clicks, cluster_labels, cluster_names):
+    if not cluster_labels:
+        return empty_traces_fig("Run clustering first"), "No clusters"
+    fig = make_cluster_centroid_fig(cluster_labels, cluster_names or {})
+    n_clusters = len(set(v for v in cluster_labels.values() if v >= 0))
+    return fig, f"Centroid traces for {n_clusters} cluster(s)"
+
+
+@app.callback(
+    Output("table-download", "data"),
+    Input("download-table-btn", "n_clicks"),
+    State("cluster-labels", "data"),
+    State("cluster-names", "data"),
+    prevent_initial_call=True,
+)
+def download_table(n_clicks, cluster_labels, cluster_names):
+    export = df[_table_cols].copy()
+    if cluster_labels:
+        label_map = {int(k): v for k, v in cluster_labels.items()}
+        export["cluster_id"] = export["shot_id"].map(label_map)
+        names = cluster_names or {}
+        def _cname(cid):
+            if pd.isna(cid):
+                return ""
+            cid = int(cid)
+            return names.get(str(cid)) or (f"Cluster {cid}" if cid >= 0 else "Noise")
+
+        export["cluster_name"] = export["cluster_id"].apply(_cname)
+    return dcc.send_data_frame(export.to_csv, "niceshot_export.csv", index=False)
 
 
 # ---------------------------------------------------------------------------
