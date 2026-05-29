@@ -740,12 +740,15 @@ def _run_clustering(algorithm: str, features: list[str], n_clusters: int, eps: f
     X = StandardScaler().fit_transform(sub[valid].values.astype(float))
     if algorithm == "kmeans":
         from sklearn.cluster import KMeans
+
         labels = KMeans(n_clusters=int(n_clusters), random_state=42, n_init="auto").fit_predict(X)
     elif algorithm == "dbscan":
         from sklearn.cluster import DBSCAN
+
         labels = DBSCAN(eps=float(eps), min_samples=int(min_samples)).fit_predict(X)
     elif algorithm == "agglomerative":
         from sklearn.cluster import AgglomerativeClustering
+
         labels = AgglomerativeClustering(n_clusters=int(n_clusters)).fit_predict(X)
     else:
         return {}
@@ -810,10 +813,7 @@ def _compute_centroids(cluster_labels: dict) -> dict | None:
 
 def _render_centroid_fig(centroid_data: dict, cluster_names: dict) -> go.Figure:
     """Build a subplot figure from pre-computed centroid data (no I/O)."""
-    available = [
-        s for s in TIME_TRACE_SIGNALS
-        if any(s in cdf for cdf in centroid_data.values())
-    ]
+    available = [s for s in TIME_TRACE_SIGNALS if any(s in cdf for cdf in centroid_data.values())]
     if not available:
         return empty_traces_fig("No matching signals in centroid data")
 
@@ -838,11 +838,16 @@ def _render_centroid_fig(centroid_data: dict, cluster_names: dict) -> go.Figure:
                     legendgroup=f"c{cid}",
                     showlegend=(i == 0),
                 ),
-                row=i + 1, col=1,
+                row=i + 1,
+                col=1,
             )
         fig.update_yaxes(
-            title_text=sig, title_font=dict(size=11),
-            row=i + 1, col=1, gridcolor="#333", zerolinecolor="#555",
+            title_text=sig,
+            title_font=dict(size=11),
+            row=i + 1,
+            col=1,
+            gridcolor="#333",
+            zerolinecolor="#555",
         )
     fig.update_xaxes(title_text="Time (s)", row=n, col=1, gridcolor="#333", zerolinecolor="#555")
     fig.update_layout(**_trace_layout(), showlegend=True, legend=dict(bgcolor="rgba(0,0,0,0)"))
@@ -861,9 +866,7 @@ _OUTLIER_RED = "#ff4444"
 _INLIER_BLUE = "#4488cc"
 
 
-def _run_outlier_detection(
-    algorithm: str, features: list[str], contamination: float, n_neighbors: int
-) -> dict:
+def _run_outlier_detection(algorithm: str, features: list[str], contamination: float, n_neighbors: int) -> dict:
     """Return {str(shot_id): 1 (outlier) | 0 (inlier)}."""
     from sklearn.preprocessing import StandardScaler
 
@@ -876,29 +879,25 @@ def _run_outlier_detection(
     X = StandardScaler().fit_transform(sub[valid].values.astype(float))
     if algorithm == "isoforest":
         from sklearn.ensemble import IsolationForest
+
         preds = IsolationForest(contamination=contamination, random_state=42).fit_predict(X)
     elif algorithm == "lof":
         from sklearn.neighbors import LocalOutlierFactor
-        preds = LocalOutlierFactor(
-            n_neighbors=int(n_neighbors), contamination=contamination
-        ).fit_predict(X)
+
+        preds = LocalOutlierFactor(n_neighbors=int(n_neighbors), contamination=contamination).fit_predict(X)
     else:
         return {}
     # sklearn: -1 = outlier, 1 = inlier → convert to 1/0
     return {str(int(sid)): int(p == -1) for sid, p in zip(sub["shot_id"].values, preds)}
 
 
-def _apply_outlier_color(
-    plot_df: pd.DataFrame, outlier_labels: dict
-) -> tuple[pd.DataFrame, str]:
+def _apply_outlier_color(plot_df: pd.DataFrame, outlier_labels: dict) -> tuple[pd.DataFrame, str]:
     """Merge outlier flags into plot_df. Returns (enriched_df, color_col)."""
     label_map = {int(k): v for k, v in outlier_labels.items()}
     enriched = plot_df.copy()
     enriched["_is_outlier"] = enriched["shot_id"].map(label_map)
     enriched = enriched[enriched["_is_outlier"].notna()].copy()
-    enriched["Outlier"] = enriched["_is_outlier"].apply(
-        lambda v: "Outlier" if int(v) == 1 else "Inlier"
-    )
+    enriched["Outlier"] = enriched["_is_outlier"].apply(lambda v: "Outlier" if int(v) == 1 else "Inlier")
     return enriched.drop(columns=["_is_outlier"]), "Outlier"
 
 
@@ -929,19 +928,14 @@ def _compute_outlier_traces_data(outlier_labels: dict, n_samples: int = 5) -> di
 
 def _render_outlier_traces_fig(outlier_traces_data: dict) -> go.Figure:
     """Overlay individual outlier shot traces in a subplot figure (no I/O)."""
-    available = [
-        s for s in TIME_TRACE_SIGNALS
-        if any(s in td for td in outlier_traces_data.values())
-    ]
+    available = [s for s in TIME_TRACE_SIGNALS if any(s in td for td in outlier_traces_data.values())]
     if not available:
         return empty_traces_fig("No matching signals in outlier trace data")
 
     colors = px.colors.qualitative.Plotly
     shot_ids = sorted(outlier_traces_data.keys(), key=int)
     n = len(available)
-    fig = make_subplots(
-        rows=n, cols=1, shared_xaxes=True, vertical_spacing=0.04, subplot_titles=available
-    )
+    fig = make_subplots(rows=n, cols=1, shared_xaxes=True, vertical_spacing=0.04, subplot_titles=available)
     for idx, sid_str in enumerate(shot_ids):
         td = outlier_traces_data[sid_str]
         color = colors[idx % len(colors)]
@@ -959,11 +953,16 @@ def _render_outlier_traces_fig(outlier_traces_data: dict) -> go.Figure:
                     legendgroup=sid_str,
                     showlegend=(i == 0),
                 ),
-                row=i + 1, col=1,
+                row=i + 1,
+                col=1,
             )
         fig.update_yaxes(
-            title_text=sig, title_font=dict(size=11),
-            row=i + 1, col=1, gridcolor="#333", zerolinecolor="#555",
+            title_text=sig,
+            title_font=dict(size=11),
+            row=i + 1,
+            col=1,
+            gridcolor="#333",
+            zerolinecolor="#555",
         )
     fig.update_xaxes(title_text="Time (s)", row=n, col=1, gridcolor="#333", zerolinecolor="#555")
     fig.update_layout(**_trace_layout(), showlegend=True, legend=dict(bgcolor="rgba(0,0,0,0)"))
@@ -1105,8 +1104,11 @@ _CLUSTER_INPUT_STYLE = dict(
 
 
 def _cluster_param_block(label: str, control, block_id: str | None = None) -> html.Div:
-    kwargs = {"id": block_id} if block_id else {}
-    return html.Div([html.Label(label, style=_CLUSTER_LABEL_STYLE), control], **kwargs)
+    children = [html.Label(label, style=_CLUSTER_LABEL_STYLE), control]
+    if block_id:
+        return html.Div(children, id=block_id)
+    return html.Div(children)
+
 
 # Scatter Graph height — fills viewport minus header + tab bar + controls + padding
 _SCATTER_H = "calc(100vh - 183px)"
@@ -1448,13 +1450,9 @@ app.layout = html.Div(
                                             color=ACCENT,
                                             children=dcc.Graph(
                                                 id="outlier-traces-plot",
-                                                figure=empty_traces_fig(
-                                                    "Run outlier detection to load sample traces"
-                                                ),
+                                                figure=empty_traces_fig("Run outlier detection to load sample traces"),
                                                 responsive=True,
-                                                config=dict(
-                                                    displayModeBar=True, displaylogo=False
-                                                ),
+                                                config=dict(displayModeBar=True, displaylogo=False),
                                                 style=dict(
                                                     height="calc(100vh - 465px)",
                                                     minHeight="200px",
@@ -1606,8 +1604,7 @@ app.layout = html.Div(
                                                                 dcc.Dropdown(
                                                                     id="cluster-features",
                                                                     options=[
-                                                                        {"label": c, "value": c}
-                                                                        for c in numeric_cols
+                                                                        {"label": c, "value": c} for c in numeric_cols
                                                                     ],
                                                                     value=(UMAP_FEATURES or numeric_cols)[:8],
                                                                     multi=True,
@@ -1740,12 +1737,9 @@ app.layout = html.Div(
                                                                 dcc.Dropdown(
                                                                     id="outlier-features",
                                                                     options=[
-                                                                        {"label": c, "value": c}
-                                                                        for c in numeric_cols
+                                                                        {"label": c, "value": c} for c in numeric_cols
                                                                     ],
-                                                                    value=(
-                                                                        UMAP_FEATURES or numeric_cols
-                                                                    )[:8],
+                                                                    value=(UMAP_FEATURES or numeric_cols)[:8],
                                                                     multi=True,
                                                                     placeholder="Select feature columns...",
                                                                     style=dict(
@@ -2333,10 +2327,7 @@ app.layout = html.Div(
                                                         ),
                                                         dcc.Dropdown(
                                                             id="corr-features",
-                                                            options=[
-                                                                {"label": c, "value": c}
-                                                                for c in numeric_cols
-                                                            ],
+                                                            options=[{"label": c, "value": c} for c in numeric_cols],
                                                             value=(UMAP_FEATURES or numeric_cols),
                                                             multi=True,
                                                             placeholder="Select feature columns...",
@@ -2539,8 +2530,13 @@ if SHOW_REF_TOGGLE:
     Input("outlier-labels", "data"),
 )
 def update_umap(
-    color_col, active_filters, selected_shot, ref_graph_enabled,
-    cluster_labels, cluster_names, outlier_labels,
+    color_col,
+    active_filters,
+    selected_shot,
+    ref_graph_enabled,
+    cluster_labels,
+    cluster_names,
+    outlier_labels,
 ) -> go.Figure:
     plot_df = _apply_filter_mask(active_filters)
     kwargs: dict = dict(
@@ -2955,11 +2951,7 @@ def update_cluster_names(name_values, cluster_labels):
     if not cluster_labels:
         return {}
     valid_ids = sorted(cid for cid in set(cluster_labels.values()) if cid >= 0)
-    return {
-        str(cid): (name_values[i] or f"Cluster {cid}")
-        for i, cid in enumerate(valid_ids)
-        if i < len(name_values)
-    }
+    return {str(cid): (name_values[i] or f"Cluster {cid}") for i, cid in enumerate(valid_ids) if i < len(name_values)}
 
 
 @app.callback(
@@ -3003,6 +2995,7 @@ def download_table(n_clicks, cluster_labels, cluster_names):
         label_map = {int(k): v for k, v in cluster_labels.items()}
         export["cluster_id"] = export["shot_id"].map(label_map)
         names = cluster_names or {}
+
         def _cname(cid):
             if pd.isna(cid):
                 return ""
@@ -3120,11 +3113,17 @@ def update_correlation(features, active_filters):
     def _empty(msg):
         fig = go.Figure()
         fig.add_annotation(
-            text=msg, xref="paper", yref="paper", x=0.5, y=0.5,
-            showarrow=False, font=dict(size=14, color="#aaa"),
+            text=msg,
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            font=dict(size=14, color="#aaa"),
         )
         fig.update_layout(
-            paper_bgcolor=DARK_BG, plot_bgcolor="#16213e",
+            paper_bgcolor=DARK_BG,
+            plot_bgcolor="#16213e",
             margin=dict(l=50, r=30, t=40, b=50),
         )
         return fig
@@ -3142,25 +3141,27 @@ def update_correlation(features, active_filters):
     z = corr.values.tolist()
     text = [[f"{corr.iloc[i, j]:.2f}" for j in range(len(labels))] for i in range(len(labels))]
 
-    fig = go.Figure(go.Heatmap(
-        z=z,
-        x=labels,
-        y=labels,
-        text=text,
-        texttemplate="%{text}",
-        textfont=dict(size=10),
-        colorscale="RdBu_r",
-        zmin=-1,
-        zmax=1,
-        colorbar=dict(
-            title=dict(text="r", font=dict(color=TEXT)),
-            tickvals=[-1, -0.5, 0, 0.5, 1],
-            ticktext=["-1", "-0.5", "0", "0.5", "1"],
-            tickfont=dict(color=TEXT),
-            bgcolor=PANEL_BG,
-            bordercolor="#2a2a4a",
-        ),
-    ))
+    fig = go.Figure(
+        go.Heatmap(
+            z=z,
+            x=labels,
+            y=labels,
+            text=text,
+            texttemplate="%{text}",
+            textfont=dict(size=10),
+            colorscale="RdBu_r",
+            zmin=-1,
+            zmax=1,
+            colorbar=dict(
+                title=dict(text="r", font=dict(color=TEXT)),
+                tickvals=[-1, -0.5, 0, 0.5, 1],
+                ticktext=["-1", "-0.5", "0", "0.5", "1"],
+                tickfont=dict(color=TEXT),
+                bgcolor=PANEL_BG,
+                bordercolor="#2a2a4a",
+            ),
+        )
+    )
     fig.update_layout(
         paper_bgcolor=DARK_BG,
         plot_bgcolor="#16213e",
@@ -3188,6 +3189,7 @@ def main() -> None:
 
     class _StandaloneApp(BaseApplication):
         def load_config(self):
+            assert self.cfg is not None
             self.cfg.set("bind", f"{_args.host}:{_args.port}")
             self.cfg.set("workers", _args.workers)
             self.cfg.set("preload_app", True)
