@@ -413,15 +413,19 @@ if SHOW_NLP_SEARCH:
 # ---------------------------------------------------------------------------
 # Nearest-neighbour similarity index
 # ---------------------------------------------------------------------------
+from sklearn.impute import SimpleImputer  # noqa: E402
 from sklearn.neighbors import NearestNeighbors  # noqa: E402
 from sklearn.preprocessing import StandardScaler  # noqa: E402
 
 _search_cols = [f for f in (UMAP_FEATURES or numeric_cols) if f in df.columns]
-_search_sub = df[["shot_id"] + _search_cols].copy()
-_search_sub[_search_cols] = _search_sub[_search_cols].replace([np.inf, -np.inf], np.nan)
-_search_sub = _search_sub.dropna(subset=_search_cols)
-_search_ids = _search_sub["shot_id"].values
-_search_X = StandardScaler().fit_transform(_search_sub[_search_cols].values.astype(float))
+_search_raw = df[["shot_id"] + _search_cols].copy()
+_search_raw[_search_cols] = _search_raw[_search_cols].replace([np.inf, -np.inf], np.nan)
+_search_ids = _search_raw["shot_id"].values
+# Impute with column means so every shot is searchable, even those with missing features.
+_search_imputer = SimpleImputer(strategy="mean")
+_search_X = StandardScaler().fit_transform(
+    _search_imputer.fit_transform(_search_raw[_search_cols].values.astype(float))
+)
 _search_nn = NearestNeighbors(metric="euclidean", algorithm="auto").fit(_search_X)
 log.info("Similarity index built: %d shots × %d features", len(_search_ids), len(_search_cols))
 
@@ -3553,18 +3557,19 @@ def find_similar_shots(_n, selected_shot, query_shot_id, k, features):
     if len(idx) == 0:
         return None, f"Shot {query_id} not found in search index", []
 
-    # If the user selected different features, rebuild a local index
+    # If the user selected different features, rebuild a local index with imputation
     valid_features = [f for f in (features or _search_cols) if f in df.columns]
     if valid_features and set(valid_features) != set(_search_cols):
         sub = df[["shot_id"] + valid_features].copy()
         sub[valid_features] = sub[valid_features].replace([np.inf, -np.inf], np.nan)
-        sub = sub.dropna(subset=valid_features)
         local_ids = sub["shot_id"].values
-        local_X = StandardScaler().fit_transform(sub[valid_features].values.astype(float))
+        local_X = StandardScaler().fit_transform(
+            SimpleImputer(strategy="mean").fit_transform(sub[valid_features].values.astype(float))
+        )
         local_nn = NearestNeighbors(metric="euclidean", algorithm="auto").fit(local_X)
         local_idx = np.where(local_ids == query_id)[0]
         if len(local_idx) == 0:
-            return None, f"Shot {query_id} not found after feature filtering", []
+            return None, f"Shot {query_id} not found in index", []
         distances, indices = local_nn.kneighbors(local_X[local_idx], n_neighbors=min(k + 1, len(local_ids)))
         result_ids = [int(local_ids[i]) for i in indices[0] if int(local_ids[i]) != query_id][:k]
         result_scores = [float(d) for i, d in zip(indices[0], distances[0]) if int(local_ids[i]) != query_id][:k]
