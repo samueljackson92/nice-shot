@@ -757,12 +757,12 @@ def _apply_cluster_color(plot_df: pd.DataFrame, cluster_labels: dict, cluster_na
     return enriched.drop(columns=["_cluster_id"]), "cluster"
 
 
-def make_cluster_centroid_fig(cluster_labels: dict, cluster_names: dict) -> go.Figure:
-    """Average time traces per cluster and return a multi-cluster subplot figure."""
-    if not cluster_labels:
-        return empty_traces_fig("Run clustering to enable centroid traces")
-    if not SHOW_TRACES:
-        return empty_traces_fig("No data directory — pass --data-dir to enable time traces")
+def _compute_centroids(cluster_labels: dict) -> dict | None:
+    """Load & average time traces per cluster.
+    Returns {str(cluster_id): {col: [values]}} suitable for dcc.Store, or None on failure.
+    """
+    if not cluster_labels or not SHOW_TRACES:
+        return None
 
     cluster_shots: dict[int, list[int]] = {}
     for sid_str, cid in cluster_labels.items():
@@ -771,10 +771,10 @@ def make_cluster_centroid_fig(cluster_labels: dict, cluster_names: dict) -> go.F
         cluster_shots.setdefault(int(cid), []).append(int(sid_str))
 
     if not cluster_shots:
-        return empty_traces_fig("No valid clusters found (DBSCAN noise only?)")
+        return None
 
     MAX_PER_CLUSTER = 50
-    cluster_dfs: dict[int, pd.DataFrame] = {}
+    result: dict[str, dict] = {}
     for cid, shot_ids in sorted(cluster_shots.items()):
         dfs = []
         for sid in shot_ids[:MAX_PER_CLUSTER]:
@@ -787,7 +787,7 @@ def make_cluster_centroid_fig(cluster_labels: dict, cluster_names: dict) -> go.F
         if not dfs:
             continue
         time_ref = dfs[0]["time"].values
-        averaged: dict[str, np.ndarray] = {"time": time_ref}
+        averaged: dict[str, list] = {"time": time_ref.tolist()}
         for sig in TIME_TRACE_SIGNALS:
             vals = [
                 np.interp(time_ref, d["time"].values, d[sig].fillna(0).values)
@@ -795,30 +795,35 @@ def make_cluster_centroid_fig(cluster_labels: dict, cluster_names: dict) -> go.F
                 if sig in d.columns and d[sig].notna().any()
             ]
             if vals:
-                averaged[sig] = np.nanmean(vals, axis=0)
-        cluster_dfs[cid] = pd.DataFrame(averaged)
+                averaged[sig] = np.nanmean(vals, axis=0).tolist()
+        result[str(cid)] = averaged
+    return result or None
 
-    if not cluster_dfs:
-        return empty_traces_fig("Could not load traces for any cluster")
 
-    available = [s for s in TIME_TRACE_SIGNALS if any(s in cdf.columns for cdf in cluster_dfs.values())]
+def _render_centroid_fig(centroid_data: dict, cluster_names: dict) -> go.Figure:
+    """Build a subplot figure from pre-computed centroid data (no I/O)."""
+    available = [
+        s for s in TIME_TRACE_SIGNALS
+        if any(s in cdf for cdf in centroid_data.values())
+    ]
     if not available:
-        return empty_traces_fig("No matching signals in loaded traces")
+        return empty_traces_fig("No matching signals in centroid data")
 
     colors = px.colors.qualitative.Plotly
     n = len(available)
     fig = make_subplots(rows=n, cols=1, shared_xaxes=True, vertical_spacing=0.04, subplot_titles=available)
-    for cid, cdf in sorted(cluster_dfs.items()):
-        name = (cluster_names or {}).get(str(cid)) or f"Cluster {cid}"
+    for cid_str, cdf in sorted(centroid_data.items(), key=lambda x: int(x[0])):
+        cid = int(cid_str)
+        name = (cluster_names or {}).get(cid_str) or f"Cluster {cid}"
         color = colors[cid % len(colors)]
+        time_arr = cdf.get("time", [])
         for i, sig in enumerate(available):
-            if sig not in cdf.columns:
+            if sig not in cdf:
                 continue
-            mask = cdf[sig].notna()
             fig.add_trace(
                 go.Scatter(
-                    x=cdf.loc[mask, "time"],
-                    y=cdf.loc[mask, sig],
+                    x=time_arr,
+                    y=cdf[sig],
                     name=name,
                     mode="lines",
                     line=dict(color=color, width=2),
@@ -828,7 +833,8 @@ def make_cluster_centroid_fig(cluster_labels: dict, cluster_names: dict) -> go.F
                 row=i + 1, col=1,
             )
         fig.update_yaxes(
-            title_text=sig, title_font=dict(size=11), row=i + 1, col=1, gridcolor="#333", zerolinecolor="#555"
+            title_text=sig, title_font=dict(size=11),
+            row=i + 1, col=1, gridcolor="#333", zerolinecolor="#555",
         )
     fig.update_xaxes(title_text="Time (s)", row=n, col=1, gridcolor="#333", zerolinecolor="#555")
     fig.update_layout(**_trace_layout(), showlegend=True, legend=dict(bgcolor="rgba(0,0,0,0)"))
@@ -1017,6 +1023,7 @@ app.layout = html.Div(
         dcc.Store(id="ref-graph-enabled", data=False),
         dcc.Store(id="cluster-labels", data=None),
         dcc.Store(id="cluster-names", data={}),
+        dcc.Store(id="centroid-data", data=None),
         dcc.Download(id="table-download"),
         # Header
         html.Div(
@@ -2154,7 +2161,7 @@ if SHOW_REF_TOGGLE:
     Input("selected-shot", "data"),
     Input("ref-graph-enabled", "data"),
     Input("cluster-labels", "data"),
-    State("cluster-names", "data"),
+    Input("cluster-names", "data"),
 )
 def update_umap(
     color_col, active_filters, selected_shot, ref_graph_enabled, cluster_labels, cluster_names
@@ -2201,7 +2208,7 @@ def update_umap(
     Input("selected-shot", "data"),
     Input("ref-graph-enabled", "data"),
     Input("cluster-labels", "data"),
-    State("cluster-names", "data"),
+    Input("cluster-names", "data"),
 )
 def update_pair_plot(
     x_col,
@@ -2468,6 +2475,7 @@ if SHOW_TRACES:
 @app.callback(
     Output("cluster-labels", "data"),
     Output("cluster-status", "children"),
+    Output("umap-color-col", "value"),
     Input("run-cluster-btn", "n_clicks"),
     State("cluster-algorithm", "value"),
     State("cluster-features", "value"),
@@ -2478,7 +2486,7 @@ if SHOW_TRACES:
 )
 def run_clustering(n_clicks, algorithm, features, n_clusters, eps, min_samples):
     if not features:
-        return dash.no_update, "Select at least one feature"
+        return dash.no_update, "Select at least one feature", dash.no_update
     try:
         labels = _run_clustering(
             algorithm=algorithm or "kmeans",
@@ -2489,16 +2497,16 @@ def run_clustering(n_clicks, algorithm, features, n_clusters, eps, min_samples):
         )
     except Exception as exc:
         log.error("[clustering] %s", exc)
-        return dash.no_update, f"Error: {exc}"
+        return dash.no_update, f"Error: {exc}", dash.no_update
     if not labels:
-        return None, "No shots clustered — check features"
+        return None, "No shots clustered — check features", dash.no_update
     unique = sorted(set(labels.values()))
     n_valid = sum(1 for v in unique if v >= 0)
     noise = sum(1 for v in labels.values() if v < 0)
     msg = f"{n_valid} cluster(s) across {len(labels):,} shots"
     if noise:
         msg += f" · {noise:,} noise"
-    return labels, msg
+    return labels, msg, _CLUSTER_COLOR_VALUE
 
 
 @app.callback(
@@ -2566,19 +2574,31 @@ def update_cluster_names(name_values, cluster_labels):
 
 
 @app.callback(
-    Output("cluster-traces-plot", "figure"),
-    Output("centroid-status", "children"),
+    Output("centroid-data", "data"),
+    Input("cluster-labels", "data"),
     Input("compute-centroid-btn", "n_clicks"),
-    State("cluster-labels", "data"),
-    State("cluster-names", "data"),
     prevent_initial_call=True,
 )
-def update_cluster_traces(n_clicks, cluster_labels, cluster_names):
+def compute_centroid_data(cluster_labels, _btn):
     if not cluster_labels:
-        return empty_traces_fig("Run clustering first"), "No clusters"
-    fig = make_cluster_centroid_fig(cluster_labels, cluster_names or {})
-    n_clusters = len(set(v for v in cluster_labels.values() if v >= 0))
-    return fig, f"Centroid traces for {n_clusters} cluster(s)"
+        return None
+    return _compute_centroids(cluster_labels)
+
+
+@app.callback(
+    Output("cluster-traces-plot", "figure"),
+    Output("centroid-status", "children"),
+    Input("centroid-data", "data"),
+    Input("cluster-names", "data"),
+)
+def render_centroid_fig(centroid_data, cluster_names):
+    if not centroid_data:
+        if not SHOW_TRACES:
+            return empty_traces_fig("No data directory — pass --data-dir to enable time traces"), ""
+        return empty_traces_fig("Run clustering to compute centroid traces"), ""
+    fig = _render_centroid_fig(centroid_data, cluster_names or {})
+    n = len(centroid_data)
+    return fig, f"Centroid traces · {n} cluster(s)"
 
 
 @app.callback(
