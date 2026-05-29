@@ -417,7 +417,9 @@ from sklearn.neighbors import NearestNeighbors  # noqa: E402
 from sklearn.preprocessing import StandardScaler  # noqa: E402
 
 _search_cols = [f for f in (UMAP_FEATURES or numeric_cols) if f in df.columns]
-_search_sub = df[["shot_id"] + _search_cols].dropna()
+_search_sub = df[["shot_id"] + _search_cols].copy()
+_search_sub[_search_cols] = _search_sub[_search_cols].replace([np.inf, -np.inf], np.nan)
+_search_sub = _search_sub.dropna(subset=_search_cols)
 _search_ids = _search_sub["shot_id"].values
 _search_X = StandardScaler().fit_transform(_search_sub[_search_cols].values.astype(float))
 _search_nn = NearestNeighbors(metric="euclidean", algorithm="auto").fit(_search_X)
@@ -3437,7 +3439,9 @@ def find_similar_shots(_n, query_shot_id, k, features):
     # If the user selected different features, rebuild a local index
     valid_features = [f for f in (features or _search_cols) if f in df.columns]
     if valid_features and set(valid_features) != set(_search_cols):
-        sub = df[["shot_id"] + valid_features].dropna()
+        sub = df[["shot_id"] + valid_features].copy()
+        sub[valid_features] = sub[valid_features].replace([np.inf, -np.inf], np.nan)
+        sub = sub.dropna(subset=valid_features)
         local_ids = sub["shot_id"].values
         local_X = StandardScaler().fit_transform(sub[valid_features].values.astype(float))
         local_nn = NearestNeighbors(metric="euclidean", algorithm="auto").fit(local_X)
