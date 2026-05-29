@@ -423,8 +423,12 @@
 <ul>
 <li><strong>Projection view</strong> — UMAP or PCA scatter of every shot, coloured by any column</li>
 <li><strong>Pairwise scatter</strong> — any two numeric columns plotted against each other</li>
-<li><strong>Data table</strong> — sortable, searchable shot records</li>
+<li><strong>Correlation</strong> — Pearson correlation heatmap for any selection of numeric columns</li>
+<li><strong>Data table</strong> — sortable, searchable shot records with CSV export</li>
 <li><strong>Time traces</strong> — per-shot signal traces loaded on click (parquet, UDA, or SAL backends)</li>
+<li><strong>Clustering</strong> — K-Means, DBSCAN, or Agglomerative on any numeric columns; results colour the scatter plots with user-defined class names</li>
+<li><strong>Cluster centroid traces</strong> — averaged time-series per cluster, updated live as class names change</li>
+<li><strong>Outlier detection</strong> — Isolation Forest or Local Outlier Factor; outliers highlighted on scatter plots with sample traces shown automatically</li>
 <li><strong>SHAP decision plots</strong> — per-shot feature attribution (optional)</li>
 <li><strong>Reference graph</strong> — reference-shot relationships overlaid on scatter plots (optional)</li>
 </ul>
