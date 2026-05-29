@@ -1,0 +1,130 @@
+# NiceShot example configuration — all options shown and commented out.
+# Copy this file, uncomment what you need, and pass it with --config.
+#
+# Run with: uv run python nice_shot/app.py [options]
+#
+# CLI options (all have defaults):
+#   --config PATH         Path to this config file (default: nice_shot/config.yaml)
+#   --shot-data PATH      Path to shot stats file: .csv, .parquet, or .pg (PostgreSQL)
+#                         (default: outputs/shot_stats.parquet)
+#   --data-dir PATH       Directory of per-shot parquet files (parquet backend only)
+#                         (default: data/mastu/)
+#   --projection PATH     Pre-computed 2-D embedding file (.npy, .csv, or .parquet)
+#                         Skips UMAP/PCA entirely when provided
+#   --shap-data PATH      NetCDF file of SHAP values (.nc) for feature attribution
+#   --umap-cache PATH     Path to UMAP embedding cache, created if missing
+#                         (default: outputs/umap_embedding.npy)
+#   --host HOST           Host to bind to (default: 0.0.0.0)
+#   --port PORT           Port to listen on (default: 8050)
+#   --no-debug            Disable Dash debug mode
+
+# ---------------------------------------------------------------------------
+# Backend — how per-shot time traces are loaded.
+#
+# Options:
+#   parquet   – read from local .parquet or .csv files under --data-dir
+#   uda       – fetch live from a UDA server via uda-xarray
+#   sal       – fetch live from a SAL server via sal-xarray
+#   postgres  – query a PostgreSQL table via DuckDB's postgres extension
+# ---------------------------------------------------------------------------
+# backend: parquet
+
+# ---------------------------------------------------------------------------
+# Signals — names of the time-series channels to load and display.
+#
+# For the parquet backend these must match column names in the per-shot files.
+# For uda/sal they are passed directly as signal identifiers.
+# For postgres they must match column names in the trace table.
+# ---------------------------------------------------------------------------
+# signals:
+#   - ip
+#   - ne
+#   - dalpha
+#   - loopv
+#   - plasma_energy
+
+# ---------------------------------------------------------------------------
+# Time window — crop all time traces to this range (seconds).
+# Applies to every backend. min_time must be less than max_time.
+# ---------------------------------------------------------------------------
+# time_window:
+#   min_time: 0.0
+#   max_time: 1.0
+
+# ---------------------------------------------------------------------------
+# UDA options — only used when backend: uda.
+# ---------------------------------------------------------------------------
+# uda:
+#   # Resample all signals onto a uniform time grid at this rate (Hz).
+#   # If omitted, the native time axis of the first loaded signal is used.
+#   timebase_hz: 1000
+
+# ---------------------------------------------------------------------------
+# Projection method — algorithm used to reduce shot statistics to 2-D.
+#
+# Options:
+#   umap  – non-linear; often preserves cluster structure better (default)
+#   pca   – linear, fast, and deterministic
+#
+# Changing this value invalidates the projection cache.
+# ---------------------------------------------------------------------------
+# projection_method: umap
+
+# ---------------------------------------------------------------------------
+# UMAP features — columns from the shot statistics file used as input
+# features when computing the UMAP or PCA projection.
+#
+# Defaults to all numeric columns (excluding shot_id) when omitted.
+# Shots with NaN in any listed column are excluded from the projection.
+# Changing this list invalidates the cache.
+# ---------------------------------------------------------------------------
+# umap_features:
+#   - ip_max
+#   - ne_max
+#   - bt_max
+#   - betmhd_max
+#   - wmhd_ipmax
+
+# ---------------------------------------------------------------------------
+# Reference shot column — column in the shot statistics file that holds
+# the reference (parent) shot ID.
+#
+# When set, a toggle appears in the left panel that draws the connected
+# reference graph on the scatter plot when a shot is selected.
+# Omit (or set to null) to hide this feature.
+# ---------------------------------------------------------------------------
+# reference_shot_col: reference__number
+
+# ---------------------------------------------------------------------------
+# Plugins — Python module paths imported at startup before backends are
+# created. Use this to register custom ShotDataBackend or TraceBackend
+# subclasses without modifying the NiceShot source.
+#
+# Each entry must be importable (i.e. on sys.path or installed).
+# Modules should call register_shot_data_backend() or
+# register_trace_backend() at import time.
+# ---------------------------------------------------------------------------
+# plugins:
+#   - my_package.my_backends
+
+# ---------------------------------------------------------------------------
+# Backend options — arbitrary key/value pairs forwarded to the active
+# backend via BackendConfig.options. Keys depend on the chosen backend.
+#
+# PostgreSQL backend options (backend: postgres, or --shot-data *.pg):
+#   dsn          – libpq connection string (required)
+#                  e.g. "postgresql://user:pass@host/db"
+#   trace_table  – table holding per-shot time-series rows (default: traces)
+#   shot_table   – table holding shot statistics, used with a .pg shot data
+#                  file; defaults to the path stem of --shot-data
+#   schema       – PostgreSQL schema for both tables (default: public)
+#   shot_col     – column used to filter trace rows by shot ID (default: shot_id)
+#   time_col     – column used as the time axis in the trace table (default: time)
+# ---------------------------------------------------------------------------
+# backend_options:
+#   dsn: "postgresql://user:pass@host/db"
+#   trace_table: traces
+#   shot_table: shots
+#   schema: public
+#   shot_col: shot_id
+#   time_col: time

@@ -305,6 +305,95 @@ class SalTraceBackend(_RemoteTraceBackend):
         return f"sal://pulse/{shot_id}/{signal}"
 
 
+class PostgresShotDataBackend(ShotDataBackend):
+    """Loads shot statistics from a PostgreSQL table via DuckDB's postgres extension.
+
+    Required option:
+      ``dsn`` — libpq connection string, e.g. ``postgresql://user:pass@host/db``.
+
+    Optional options:
+      ``shot_table`` — table name (default: stem of *path*, e.g. ``shots`` from ``shots.pg``).
+      ``schema``     — PostgreSQL schema (default: ``public``).
+    """
+
+    def load(self, path: str) -> pd.DataFrame:
+        import duckdb
+
+        dsn = self.config.options["dsn"]
+        table = self.config.options.get("shot_table", os.path.splitext(os.path.basename(path))[0])
+        schema = self.config.options.get("schema", "public")
+
+        log.info("Loading shot data from PostgreSQL '%s.%s'...", schema, table)
+        con = duckdb.connect()
+        try:
+            con.execute("INSTALL postgres; LOAD postgres;")
+            con.execute(f"ATTACH '{dsn}' AS pg (TYPE POSTGRES, READ_ONLY)")
+            df = con.execute(f"SELECT * FROM pg.{schema}.{table}").df()
+        finally:
+            con.close()
+        return self._prepare(df)
+
+
+class PostgresTraceBackend(TraceBackend):
+    """Loads per-shot time-series traces from a PostgreSQL table via DuckDB.
+
+    Required option:
+      ``dsn`` — libpq connection string, e.g. ``postgresql://user:pass@host/db``.
+
+    Optional options:
+      ``trace_table`` — table name (default: ``traces``).
+      ``schema``      — PostgreSQL schema (default: ``public``).
+      ``shot_col``    — column holding the shot ID (default: ``shot_id``).
+      ``time_col``    — column holding the time axis (default: ``time``).
+    """
+
+    def is_available(self) -> bool:
+        import duckdb
+
+        try:
+            con = duckdb.connect()
+            con.execute("INSTALL postgres; LOAD postgres;")
+            con.execute(f"ATTACH '{self.config.options['dsn']}' AS pg (TYPE POSTGRES, READ_ONLY)")
+            con.execute("SELECT 1")
+            con.close()
+            return True
+        except Exception as exc:
+            log.warning("PostgreSQL backend unavailable: %s", exc)
+            return False
+
+    def load(self, shot_id: int) -> pd.DataFrame | None:
+        import duckdb
+
+        dsn = self.config.options["dsn"]
+        schema = self.config.options.get("schema", "public")
+        table = self.config.options.get("trace_table", "traces")
+        shot_col = self.config.options.get("shot_col", "shot_id")
+        time_col = self.config.options.get("time_col", "time")
+        min_t, max_t = self.config.min_time, self.config.max_time
+
+        try:
+            con = duckdb.connect()
+            con.execute("INSTALL postgres; LOAD postgres;")
+            con.execute(f"ATTACH '{dsn}' AS pg (TYPE POSTGRES, READ_ONLY)")
+            query = (
+                f"SELECT * FROM pg.{schema}.{table} "
+                f"WHERE {shot_col} = {shot_id} "
+                f"AND {time_col} >= {min_t} AND {time_col} <= {max_t}"
+            )
+            df = con.execute(query).df()
+            con.close()
+        except Exception as exc:
+            log.error("Failed to load traces for shot %d: %s", shot_id, exc)
+            return None
+
+        if df.empty:
+            return None
+
+        if time_col != "time":
+            df = df.rename(columns={time_col: "time"})
+        return df
+
+
 # ---------------------------------------------------------------------------
 # Registry + factory functions.
 # ---------------------------------------------------------------------------
@@ -366,6 +455,8 @@ def create_trace_backend(name: str, config: BackendConfig) -> TraceBackend:
 register_shot_data_backend(".csv", CsvShotDataBackend)
 register_shot_data_backend(".parquet", ParquetShotDataBackend)
 register_shot_data_backend(".pq", ParquetShotDataBackend)
+register_shot_data_backend(".pg", PostgresShotDataBackend)
 register_trace_backend("parquet", LocalParquetTraceBackend)
 register_trace_backend("uda", UdaTraceBackend)
 register_trace_backend("sal", SalTraceBackend)
+register_trace_backend("postgres", PostgresTraceBackend)

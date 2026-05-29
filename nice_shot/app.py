@@ -640,6 +640,55 @@ _CLUSTER_ALGORITHMS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Subprocess workers for sklearn fits.
+#
+# Gunicorn forks workers after numpy/BLAS is initialised; calling BLAS in a
+# forked process can cause SIGSEGV. Running fits in a fresh spawned subprocess
+# avoids this. Functions must be module-level so they can be pickled by
+# ProcessPoolExecutor.
+# ---------------------------------------------------------------------------
+
+
+def _sklearn_kmeans(X: list, n_clusters: int) -> list:
+    import numpy as np
+    from sklearn.cluster import KMeans
+    return KMeans(n_clusters=n_clusters, random_state=42, n_init="auto").fit_predict(np.array(X)).tolist()
+
+
+def _sklearn_dbscan(X: list, eps: float, min_samples: int) -> list:
+    import numpy as np
+    from sklearn.cluster import DBSCAN
+    return DBSCAN(eps=eps, min_samples=min_samples).fit_predict(np.array(X)).tolist()
+
+
+def _sklearn_agglomerative(X: list, n_clusters: int) -> list:
+    import numpy as np
+    from sklearn.cluster import AgglomerativeClustering
+    return AgglomerativeClustering(n_clusters=n_clusters).fit_predict(np.array(X)).tolist()
+
+
+def _sklearn_isoforest(X: list, contamination: float) -> list:
+    import numpy as np
+    from sklearn.ensemble import IsolationForest
+    return IsolationForest(contamination=contamination, random_state=42).fit_predict(np.array(X)).tolist()
+
+
+def _sklearn_lof(X: list, n_neighbors: int, contamination: float) -> list:
+    import numpy as np
+    from sklearn.neighbors import LocalOutlierFactor
+    return LocalOutlierFactor(n_neighbors=n_neighbors, contamination=contamination).fit_predict(np.array(X)).tolist()
+
+
+def _spawn_sklearn(fn, *args):
+    """Run fn(*args) in a fresh spawned process to avoid fork+BLAS SIGSEGV."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+    ctx = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=1, mp_context=ctx) as exe:
+        return exe.submit(fn, *args).result(timeout=120)
+
+
 def _run_clustering(algorithm: str, features: list[str], n_clusters: int, eps: float, min_samples: int) -> dict:
     """Fit clustering on selected feature columns. Returns {str(shot_id): cluster_id}."""
     from sklearn.preprocessing import StandardScaler
@@ -647,22 +696,16 @@ def _run_clustering(algorithm: str, features: list[str], n_clusters: int, eps: f
     valid = [f for f in features if f in df.columns]
     if not valid:
         return {}
-    sub = df[["shot_id"] + valid].dropna()
+    sub = df[["shot_id"] + valid].copy()
     if sub.empty:
         return {}
-    X = StandardScaler().fit_transform(sub[valid].values.astype(float))
+    X = StandardScaler().fit_transform(sub[valid].fillna(0).values.astype(float)).tolist()
     if algorithm == "kmeans":
-        from sklearn.cluster import KMeans
-
-        labels = KMeans(n_clusters=int(n_clusters), random_state=42, n_init="auto").fit_predict(X)
+        labels = _spawn_sklearn(_sklearn_kmeans, X, int(n_clusters))
     elif algorithm == "dbscan":
-        from sklearn.cluster import DBSCAN
-
-        labels = DBSCAN(eps=float(eps), min_samples=int(min_samples)).fit_predict(X)
+        labels = _spawn_sklearn(_sklearn_dbscan, X, float(eps), int(min_samples))
     elif algorithm == "agglomerative":
-        from sklearn.cluster import AgglomerativeClustering
-
-        labels = AgglomerativeClustering(n_clusters=int(n_clusters)).fit_predict(X)
+        labels = _spawn_sklearn(_sklearn_agglomerative, X, int(n_clusters))
     else:
         return {}
     return {str(int(sid)): int(lbl) for sid, lbl in zip(sub["shot_id"].values, labels)}
@@ -786,18 +829,14 @@ def _run_outlier_detection(algorithm: str, features: list[str], contamination: f
     valid = [f for f in features if f in df.columns]
     if not valid:
         return {}
-    sub = df[["shot_id"] + valid].dropna()
+    sub = df[["shot_id"] + valid].copy()
     if sub.empty:
         return {}
-    X = StandardScaler().fit_transform(sub[valid].values.astype(float))
+    X = StandardScaler().fit_transform(sub[valid].fillna(0).values.astype(float)).tolist()
     if algorithm == "isoforest":
-        from sklearn.ensemble import IsolationForest
-
-        preds = IsolationForest(contamination=contamination, random_state=42).fit_predict(X)
+        preds = _spawn_sklearn(_sklearn_isoforest, X, contamination)
     elif algorithm == "lof":
-        from sklearn.neighbors import LocalOutlierFactor
-
-        preds = LocalOutlierFactor(n_neighbors=int(n_neighbors), contamination=contamination).fit_predict(X)
+        preds = _spawn_sklearn(_sklearn_lof, X, int(n_neighbors), contamination)
     else:
         return {}
     # sklearn: -1 = outlier, 1 = inlier → convert to 1/0
@@ -1530,8 +1569,7 @@ app.layout = html.Div(
                                                                         id="cluster-eps",
                                                                         type="number",
                                                                         value=0.5,
-                                                                        min=0.01,
-                                                                        step=0.05,
+                                                                        min=0,
                                                                         style=_CLUSTER_INPUT_STYLE,
                                                                     ),
                                                                     block_id="cluster-eps-block",
@@ -3114,12 +3152,15 @@ if SHOW_TRACES:
 def run_clustering(n_clicks, algorithm, features, n_clusters, eps, min_samples):
     if not features:
         return dash.no_update, "Select at least one feature", dash.no_update, dash.no_update
+    eps_val = float(eps or 0.5)
+    if eps_val <= 0:
+        return dash.no_update, "eps must be greater than 0", dash.no_update, dash.no_update
     try:
         labels = _run_clustering(
             algorithm=algorithm or "kmeans",
             features=list(features),
             n_clusters=int(n_clusters or 5),
-            eps=float(eps or 0.5),
+            eps=eps_val,
             min_samples=int(min_samples or 5),
         )
     except Exception as exc:

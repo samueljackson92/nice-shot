@@ -7,7 +7,7 @@ NiceShot reads a YAML config file at startup (`nice_shot/config.yaml` by default
 ## `backend`
 
 ```yaml
-backend: parquet   # parquet | uda | sal
+backend: parquet   # parquet | uda | sal | postgres
 ```
 
 Controls how per-shot time traces are loaded.
@@ -17,6 +17,7 @@ Controls how per-shot time traces are loaded.
 | `parquet` | Reads `.parquet` or `.csv` files from `--data-dir`. The time-trace panel is hidden if the directory is absent or empty. |
 | `uda` | Fetches live data from UDA via `uda-xarray`. URL form: `uda://<signal>:<shot>`. Requires `uda-xarray` installed separately. |
 | `sal` | Fetches live data from SAL via `sal-xarray`. URL form: `sal://pulse/<shot>/<signal>`. Requires `sal-xarray` installed separately. |
+| `postgres` | Queries a PostgreSQL table via DuckDB's postgres extension. Requires `dsn` in `backend_options`. The time-trace panel is hidden if the database is unreachable at startup. |
 
 ---
 
@@ -97,6 +98,34 @@ uda:
 ```
 
 Only relevant when `backend: uda`. Interpolates all signals onto a uniform time grid at the given sample rate. If omitted, the native time axis of the first successfully loaded signal is used.
+
+---
+
+## `postgres` options
+
+```yaml
+backend: postgres
+
+backend_options:
+  dsn: "postgresql://user:pass@host/db"   # required
+  trace_table: traces                      # optional — default: traces
+  schema: public                           # optional — default: public
+  shot_col: shot_id                        # optional — default: shot_id
+  time_col: time                           # optional — default: time
+```
+
+Only relevant when `backend: postgres` or when using a `.pg` shot statistics file. Uses DuckDB's postgres extension to query the database directly — no separate driver installation is needed beyond DuckDB itself.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `dsn` | _(required)_ | libpq connection string passed to DuckDB's `ATTACH`. |
+| `trace_table` | `traces` | Table that holds per-shot time-series data. |
+| `schema` | `public` | PostgreSQL schema containing the table. |
+| `shot_col` | `shot_id` | Column used to filter rows by shot ID. |
+| `time_col` | `time` | Column used for the time axis; renamed to `time` in the returned data if different. |
+| `shot_table` | path stem of `--shot-data` | Table to read for shot statistics (only when using a `.pg` shot data file). |
+
+The trace table must contain at least `shot_col`, `time_col`, and one column per signal listed under `signals`. Rows are filtered to the configured `time_window` and the matching `shot_col` value in the database query, so only relevant data is transferred.
 
 ---
 

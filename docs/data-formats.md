@@ -4,7 +4,7 @@
 
 ## Shot statistics file (`--shot-data`)
 
-A flat table of per-shot summary statistics. Accepted formats: `.parquet`, `.csv`.
+A flat table of per-shot summary statistics. Accepted formats: `.parquet`, `.csv`, `.pg` (PostgreSQL).
 
 **Required:** one column that identifies the shot. The following names are detected automatically (in order of preference):
 
@@ -22,6 +22,21 @@ All other columns can be anything. Object columns that can be coerced to numeric
 |---------|--------|--------|----------------|------------------|
 | 45000   | 1.2e6  | 3.5e19 | ohmic          | 44990            |
 | 45001   | 1.4e6  | 4.1e19 | NBI            | 45000            |
+
+---
+
+## Shot statistics from PostgreSQL (`.pg`, postgres backend)
+
+Use a `.pg` file extension for `--shot-data` to read shot statistics directly from a PostgreSQL table via DuckDB's postgres extension. The file path stem is used as the default table name (e.g. `--shot-data shots.pg` reads from the `shots` table). Configure the connection and table via `backend_options` in config:
+
+```yaml
+backend_options:
+  dsn: "postgresql://user:pass@host/db"
+  shot_table: shots     # optional — defaults to the --shot-data path stem
+  schema: public        # optional — defaults to public
+```
+
+The same shot-ID column detection and renaming rules apply as for CSV/Parquet sources.
 
 ---
 
