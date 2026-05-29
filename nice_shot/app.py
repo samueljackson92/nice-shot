@@ -49,10 +49,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8050, help="Port to listen on (default: 8050)")
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Number of gunicorn worker processes (default: 4). Ignored in --debug mode.",
+    )
+    parser.add_argument(
         "--debug",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Enable/disable Dash debug mode (default: on)",
+        default=False,
+        help="Run the single-process Flask dev server instead of gunicorn (default: off)",
     )
     parser.add_argument(
         "--config",
@@ -1109,6 +1115,7 @@ MAX_FILTERS = 6
 OPERATORS = [">=", "<=", ">", "<", "==", "!=", "contains"]
 
 app = dash.Dash(__name__, title="NiceShot!")
+server = app.server  # WSGI callable for gunicorn
 app.index_string = """<!DOCTYPE html>
 <html>
     <head>
@@ -3171,7 +3178,26 @@ def update_correlation(features, active_filters):
 # ---------------------------------------------------------------------------
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    app.run(debug=_args.debug, host=_args.host, port=_args.port, use_reloader=False)
+
+    if _args.debug:
+        log.info("Debug mode: starting Flask development server (single process)")
+        app.run(debug=True, host=_args.host, port=_args.port, use_reloader=False)
+        return
+
+    from gunicorn.app.base import BaseApplication
+
+    class _StandaloneApp(BaseApplication):
+        def load_config(self):
+            self.cfg.set("bind", f"{_args.host}:{_args.port}")
+            self.cfg.set("workers", _args.workers)
+            self.cfg.set("preload_app", True)
+            self.cfg.set("timeout", 120)
+            self.cfg.set("loglevel", "info")
+
+        def load(self):
+            return server
+
+    _StandaloneApp().run()
 
 
 if __name__ == "__main__":

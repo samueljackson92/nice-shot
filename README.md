@@ -48,7 +48,13 @@ nice-shot --shot-data path/to/shot_stats.parquet
 
 Open **http://localhost:8050** in a browser.
 
-On first run, UMAP/PCA is computed and cached. Subsequent starts are instant unless the data file or `umap_features` config changes.
+By default `nice-shot` runs under **gunicorn** with 4 worker processes, which supports multiple concurrent users. On first run, UMAP/PCA is computed in the master process and cached; subsequent starts are instant.
+
+For local development with hot-reload use `--debug`:
+
+```sh
+nice-shot --shot-data path/to/shot_stats.parquet --debug
+```
 
 ### Common flags
 
@@ -59,8 +65,9 @@ On first run, UMAP/PCA is computed and cached. Subsequent starts are instant unl
 | `--data-dir PATH` | `data/mastu/` | Directory of per-shot files (parquet backend) |
 | `--projection PATH` | — | Pre-computed 2-D embedding; skips UMAP/PCA entirely |
 | `--shap-data PATH` | — | SHAP values NetCDF (`.nc`); enables the SHAP tab |
+| `--workers N` | `4` | Gunicorn worker processes (ignored in `--debug` mode) |
 | `--port PORT` | `8050` | Port to listen on |
-| `--no-debug` | — | Disable Dash hot-reload |
+| `--debug` | off | Use the single-process Flask dev server instead of gunicorn |
 
 ---
 

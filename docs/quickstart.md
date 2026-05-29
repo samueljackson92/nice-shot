@@ -22,7 +22,17 @@ nice-shot --shot-data path/to/shot_stats.parquet
 
 Open `http://localhost:8050` in a browser.
 
-The first run computes the UMAP projection and caches it. Subsequent starts load from cache unless the data file or `umap_features` list changes.
+By default `nice-shot` starts a **gunicorn** server with 4 worker processes, suitable for multiple concurrent users. The first run computes and caches the UMAP/PCA projection in the master process before workers are forked; subsequent starts are instant.
+
+---
+
+## Development mode
+
+For local development with Dash hot-reload use `--debug`. This starts the single-process Flask dev server instead of gunicorn:
+
+```sh
+nice-shot --shot-data path/to/shot_stats.parquet --debug
+```
 
 ---
 
@@ -31,7 +41,7 @@ The first run computes the UMAP projection and caches it. Subsequent starts load
 If you have a single parquet file of shot statistics and nothing else:
 
 ```sh
-nice-shot --shot-data outputs/shot_stats.parquet --no-debug
+nice-shot --shot-data outputs/shot_stats.parquet
 ```
 
 The time-trace panel is hidden automatically when `--data-dir` does not exist or is empty.
@@ -161,4 +171,5 @@ A **SHAP** tab appears in the left panel. Click any point to see its decision pl
 | `--umap-cache PATH` | platform cache dir | Where to read/write the projection cache |
 | `--host HOST` | `0.0.0.0` | Bind address |
 | `--port PORT` | `8050` | Port |
-| `--debug / --no-debug` | debug on | Dash debug / hot-reload mode |
+| `--workers N` | `4` | Gunicorn worker processes (production mode only) |
+| `--debug / --no-debug` | off | Use Flask dev server instead of gunicorn |
