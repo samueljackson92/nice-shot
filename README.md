@@ -25,18 +25,15 @@ An interactive dashboard for exploring tokamak plasma shot data. Point it at a s
 
 ## Requirements
 
-- Python ≥ 3.12
-- [uv](https://github.com/astral-sh/uv)
+Python ≥ 3.12
 
 ---
 
 ## Install
 
 ```sh
-git clone <repo>
-cd nice_shot
-uv sync                      # core dependencies
-uv sync --extra shap         # + SHAP plots, xarray, matplotlib
+pip install nice-shot
+pip install "nice-shot[shap]"   # + SHAP plots, xarray, matplotlib
 ```
 
 ---
@@ -44,7 +41,7 @@ uv sync --extra shap         # + SHAP plots, xarray, matplotlib
 ## Run
 
 ```sh
-uv run nice-shot --shot-data path/to/shot_stats.parquet
+nice-shot --shot-data path/to/shot_stats.parquet
 ```
 
 Open **http://localhost:8050** in a browser.

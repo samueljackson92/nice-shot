@@ -3,15 +3,13 @@
 ## Install
 
 ```sh
-git clone <repo>
-cd nice_shot
-uv sync
+pip install nice-shot
 ```
 
-Optional extras (SHAP plots, UDA/SAL backends):
+With optional extras (SHAP plots, xarray, matplotlib):
 
 ```sh
-uv sync --extra shap
+pip install "nice-shot[shap]"
 ```
 
 ---
@@ -19,7 +17,7 @@ uv sync --extra shap
 ## Run
 
 ```sh
-uv run python nice_shot/app.py --shot-data path/to/shot_stats.parquet
+nice-shot --shot-data path/to/shot_stats.parquet
 ```
 
 Open `http://localhost:8050` in a browser.
@@ -33,9 +31,7 @@ The first run computes the UMAP projection and caches it. Subsequent starts load
 If you have a single parquet file of shot statistics and nothing else:
 
 ```sh
-uv run python nice_shot/app.py \
-  --shot-data outputs/shot_stats.parquet \
-  --no-debug
+nice-shot --shot-data outputs/shot_stats.parquet --no-debug
 ```
 
 The time-trace panel is hidden automatically when `--data-dir` does not exist or is empty.
@@ -57,7 +53,7 @@ data/mastu/
 Each file must have a `time` column and one column per signal. Then:
 
 ```sh
-uv run python nice_shot/app.py \
+nice-shot \
   --shot-data outputs/shot_stats.parquet \
   --data-dir data/mastu \
   --config configs/config_mastu.yml
@@ -70,7 +66,7 @@ uv run python nice_shot/app.py \
 Skip UMAP computation entirely by supplying your own 2-D embedding:
 
 ```sh
-uv run python nice_shot/app.py \
+nice-shot \
   --shot-data outputs/shot_stats.parquet \
   --projection outputs/my_embedding.parquet
 ```
@@ -113,7 +109,7 @@ The **Data Table** tab has a **Download CSV** button. When clustering has been r
 ## With SHAP values
 
 ```sh
-uv run python nice_shot/app.py \
+nice-shot \
   --shot-data outputs/shot_stats.parquet \
   --shap-data outputs/shap_values.nc
 ```
