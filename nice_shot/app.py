@@ -2321,21 +2321,6 @@ app.layout = html.Div(
                                                                         ),
                                                                     ]
                                                                 ),
-                                                                html.Button(
-                                                                    "Use selected",
-                                                                    id="search-use-selected-btn",
-                                                                    n_clicks=0,
-                                                                    style=dict(
-                                                                        backgroundColor="#2a2a4a",
-                                                                        color=TEXT,
-                                                                        border=BORDER,
-                                                                        padding="4px 10px",
-                                                                        cursor="pointer",
-                                                                        borderRadius="4px",
-                                                                        fontSize="11px",
-                                                                        marginBottom="1px",
-                                                                    ),
-                                                                ),
                                                                 html.Div(
                                                                     [
                                                                         html.Label(
@@ -3438,10 +3423,9 @@ def update_correlation(features, active_filters):
 
 @app.callback(
     Output("search-query-shot", "value"),
-    Input("search-use-selected-btn", "n_clicks"),
     Input("selected-shot", "data"),
 )
-def populate_search_from_selection(_n, selected_shot):
+def populate_search_from_selection(selected_shot):
     return selected_shot
 
 
