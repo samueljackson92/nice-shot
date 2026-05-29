@@ -400,6 +400,30 @@ _table_column_defs = [
 ]
 
 # ---------------------------------------------------------------------------
+# NLP search config
+# ---------------------------------------------------------------------------
+SHOW_NLP_SEARCH: bool = _cfg.nlp_search is not None and _cfg.nlp_search.enabled
+if SHOW_NLP_SEARCH:
+    from nice_shot.nlp import search as _nlp_search
+
+    _NLP_HOST: str = _cfg.nlp_search.host  # type: ignore[union-attr]
+    _NLP_MODEL: str = _cfg.nlp_search.model  # type: ignore[union-attr]
+    log.info("NLP search enabled: model=%s host=%s", _NLP_MODEL, _NLP_HOST)
+
+# ---------------------------------------------------------------------------
+# Nearest-neighbour similarity index
+# ---------------------------------------------------------------------------
+from sklearn.neighbors import NearestNeighbors  # noqa: E402
+from sklearn.preprocessing import StandardScaler  # noqa: E402
+
+_search_cols = [f for f in (UMAP_FEATURES or numeric_cols) if f in df.columns]
+_search_sub = df[["shot_id"] + _search_cols].dropna()
+_search_ids = _search_sub["shot_id"].values
+_search_X = StandardScaler().fit_transform(_search_sub[_search_cols].values.astype(float))
+_search_nn = NearestNeighbors(metric="euclidean", algorithm="auto").fit(_search_X)
+log.info("Similarity index built: %d shots × %d features", len(_search_ids), len(_search_cols))
+
+# ---------------------------------------------------------------------------
 # Reference-shot graph
 # ---------------------------------------------------------------------------
 SHOW_REF_TOGGLE = False
@@ -1050,6 +1074,7 @@ app.layout = html.Div(
         dcc.Store(id="centroid-data", data=None),
         dcc.Store(id="outlier-labels", data=None),
         dcc.Store(id="outlier-traces-data", data=None),
+        dcc.Store(id="search-results", data=None),
         dcc.Download(id="table-download"),
         # Header
         html.Div(
@@ -2189,6 +2214,268 @@ app.layout = html.Div(
                                         ),
                                     ],
                                 ),
+                                # -- Search tab --
+                                dcc.Tab(
+                                    label="Search",
+                                    value="search",
+                                    style=dict(color=TEXT, backgroundColor=PANEL_BG),
+                                    selected_style=dict(
+                                        color=ACCENT,
+                                        backgroundColor=DARK_BG,
+                                        borderTop=f"2px solid {ACCENT}",
+                                    ),
+                                    children=[
+                                        html.Div(
+                                            style=dict(
+                                                padding="8px 4px",
+                                                overflowY="auto",
+                                                height=_SCATTER_H,
+                                            ),
+                                            children=[
+                                                # ── Similarity search ──────────────────────
+                                                html.Div(
+                                                    style=dict(
+                                                        borderBottom=BORDER,
+                                                        paddingBottom="12px",
+                                                        marginBottom="12px",
+                                                    ),
+                                                    children=[
+                                                        html.Label(
+                                                            "Find similar shots",
+                                                            style=dict(
+                                                                fontSize="12px",
+                                                                color=ACCENT,
+                                                                fontWeight="600",
+                                                                display="block",
+                                                                marginBottom="8px",
+                                                            ),
+                                                        ),
+                                                        html.Div(
+                                                            style=dict(
+                                                                display="flex",
+                                                                gap="8px",
+                                                                alignItems="flex-end",
+                                                                flexWrap="wrap",
+                                                                marginBottom="8px",
+                                                            ),
+                                                            children=[
+                                                                html.Div(
+                                                                    [
+                                                                        html.Label(
+                                                                            "Shot ID",
+                                                                            style=_CLUSTER_LABEL_STYLE,
+                                                                        ),
+                                                                        dcc.Input(
+                                                                            id="search-query-shot",
+                                                                            type="number",
+                                                                            placeholder="e.g. 45000",
+                                                                            debounce=False,
+                                                                            style=dict(
+                                                                                backgroundColor="#16213e",
+                                                                                color=TEXT,
+                                                                                border=BORDER,
+                                                                                padding="4px 6px",
+                                                                                fontSize="11px",
+                                                                                width="90px",
+                                                                                borderRadius="4px",
+                                                                                outline="none",
+                                                                            ),
+                                                                        ),
+                                                                    ]
+                                                                ),
+                                                                html.Button(
+                                                                    "Use selected",
+                                                                    id="search-use-selected-btn",
+                                                                    n_clicks=0,
+                                                                    style=dict(
+                                                                        backgroundColor="#2a2a4a",
+                                                                        color=TEXT,
+                                                                        border=BORDER,
+                                                                        padding="4px 10px",
+                                                                        cursor="pointer",
+                                                                        borderRadius="4px",
+                                                                        fontSize="11px",
+                                                                        marginBottom="1px",
+                                                                    ),
+                                                                ),
+                                                                html.Div(
+                                                                    [
+                                                                        html.Label(
+                                                                            "K results",
+                                                                            style=_CLUSTER_LABEL_STYLE,
+                                                                        ),
+                                                                        dcc.Input(
+                                                                            id="search-k",
+                                                                            type="number",
+                                                                            value=10,
+                                                                            min=1,
+                                                                            max=50,
+                                                                            step=1,
+                                                                            style=_CLUSTER_INPUT_STYLE,
+                                                                        ),
+                                                                    ]
+                                                                ),
+                                                            ],
+                                                        ),
+                                                        html.Div(
+                                                            style=dict(marginBottom="8px"),
+                                                            children=[
+                                                                html.Label(
+                                                                    "Features",
+                                                                    style=_CLUSTER_LABEL_STYLE,
+                                                                ),
+                                                                dcc.Dropdown(
+                                                                    id="search-features",
+                                                                    options=[
+                                                                        {"label": c, "value": c} for c in _search_cols
+                                                                    ],
+                                                                    value=_search_cols,
+                                                                    multi=True,
+                                                                    style=dict(
+                                                                        backgroundColor="#16213e",
+                                                                        color="#000",
+                                                                        fontSize="11px",
+                                                                    ),
+                                                                ),
+                                                            ],
+                                                        ),
+                                                        html.Button(
+                                                            "Find similar shots",
+                                                            id="find-similar-btn",
+                                                            n_clicks=0,
+                                                            style=dict(
+                                                                backgroundColor=ACCENT,
+                                                                color="#000",
+                                                                border="none",
+                                                                padding="4px 12px",
+                                                                cursor="pointer",
+                                                                borderRadius="4px",
+                                                                fontSize="11px",
+                                                                fontWeight="600",
+                                                            ),
+                                                        ),
+                                                    ],
+                                                ),
+                                                # ── NLP search (optional) ──────────────────
+                                                *(
+                                                    [
+                                                        html.Div(
+                                                            style=dict(
+                                                                borderBottom=BORDER,
+                                                                paddingBottom="12px",
+                                                                marginBottom="12px",
+                                                            ),
+                                                            children=[
+                                                                html.Label(
+                                                                    "Natural language search",
+                                                                    style=dict(
+                                                                        fontSize="12px",
+                                                                        color=ACCENT,
+                                                                        fontWeight="600",
+                                                                        display="block",
+                                                                        marginBottom="4px",
+                                                                    ),
+                                                                ),
+                                                                html.Span(
+                                                                    f"model: {_NLP_MODEL}  ·  {_NLP_HOST}",
+                                                                    style=dict(
+                                                                        fontSize="10px",
+                                                                        color="#666",
+                                                                        display="block",
+                                                                        marginBottom="8px",
+                                                                    ),
+                                                                ),
+                                                                dcc.Input(
+                                                                    id="nlp-search-input",
+                                                                    type="text",
+                                                                    placeholder='e.g. "high plasma current, q95 > 3"',
+                                                                    debounce=False,
+                                                                    style=dict(
+                                                                        backgroundColor="#16213e",
+                                                                        color=TEXT,
+                                                                        border=BORDER,
+                                                                        padding="4px 8px",
+                                                                        fontSize="11px",
+                                                                        width="100%",
+                                                                        borderRadius="4px",
+                                                                        outline="none",
+                                                                        marginBottom="8px",
+                                                                        boxSizing="border-box",
+                                                                    ),
+                                                                ),
+                                                                html.Button(
+                                                                    "Search",
+                                                                    id="nlp-search-btn",
+                                                                    n_clicks=0,
+                                                                    style=dict(
+                                                                        backgroundColor="#2a4a2a",
+                                                                        color="#aaffaa",
+                                                                        border="1px solid #3a6a3a",
+                                                                        padding="4px 12px",
+                                                                        cursor="pointer",
+                                                                        borderRadius="4px",
+                                                                        fontSize="11px",
+                                                                        fontWeight="600",
+                                                                    ),
+                                                                ),
+                                                                html.Div(
+                                                                    id="nlp-interpreted",
+                                                                    style=dict(
+                                                                        marginTop="6px",
+                                                                        fontSize="10px",
+                                                                        color="#888",
+                                                                    ),
+                                                                ),
+                                                            ],
+                                                        )
+                                                    ]
+                                                    if SHOW_NLP_SEARCH
+                                                    else []
+                                                ),
+                                                # ── Results ───────────────────────────────
+                                                html.Span(
+                                                    id="search-status",
+                                                    style=dict(
+                                                        fontSize="11px",
+                                                        color="#888",
+                                                        display="block",
+                                                        marginBottom="6px",
+                                                    ),
+                                                ),
+                                                dash_table.DataTable(
+                                                    id="search-results-table",
+                                                    columns=[
+                                                        {"name": "shot_id", "id": "shot_id"},
+                                                        {"name": "rank", "id": "rank"},
+                                                        {
+                                                            "name": "score",
+                                                            "id": "score",
+                                                            "type": "numeric",
+                                                            "format": {"specifier": ".3f"},
+                                                        },
+                                                    ],
+                                                    data=[],
+                                                    page_size=20,
+                                                    style_table={"overflowX": "auto"},
+                                                    style_cell=dict(
+                                                        backgroundColor="#16213e",
+                                                        color=TEXT,
+                                                        fontSize="11px",
+                                                        padding="3px 10px",
+                                                        border="1px solid #2a2a4a",
+                                                    ),
+                                                    style_header=dict(
+                                                        backgroundColor=PANEL_BG,
+                                                        color=ACCENT,
+                                                        fontWeight="600",
+                                                        fontSize="11px",
+                                                        border="1px solid #2a2a4a",
+                                                    ),
+                                                ),
+                                            ],
+                                        ),
+                                    ],
+                                ),
                                 # -- Correlation tab --
                                 dcc.Tab(
                                     label="Correlation",
@@ -2280,6 +2567,42 @@ def _add_selection_highlight(fig: go.Figure, plot_df: pd.DataFrame, x_col: str, 
             name="_selection",
         )
     )
+    return fig
+
+
+def _add_search_highlight(
+    fig: go.Figure,
+    plot_df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    search_results: list[int] | None,
+) -> go.Figure:
+    """Overlay gold ring markers for search results, fading by rank."""
+    if not search_results:
+        return fig
+    n = len(search_results)
+    for rank, shot_id in enumerate(search_results):
+        row = plot_df[plot_df["shot_id"] == shot_id]
+        if row.empty:
+            continue
+        opacity = max(0.35, 1.0 - rank / max(n - 1, 1) * 0.65)
+        fig.add_trace(
+            go.Scatter(
+                x=row[x_col],
+                y=row[y_col],
+                mode="markers",
+                marker=dict(
+                    size=12,
+                    color="rgba(0,0,0,0)",
+                    line=dict(color=f"rgba(255,215,0,{opacity:.2f})", width=2),
+                    symbol="circle",
+                ),
+                customdata=row[["shot_id"]].values,
+                hovertemplate=f"rank {rank + 1}: %{{customdata[0]}}<extra></extra>",
+                showlegend=False,
+                name="_search",
+            )
+        )
     return fig
 
 
@@ -2422,6 +2745,7 @@ if SHOW_REF_TOGGLE:
     Input("cluster-labels", "data"),
     Input("cluster-names", "data"),
     Input("outlier-labels", "data"),
+    Input("search-results", "data"),
 )
 def update_umap(
     color_col,
@@ -2431,6 +2755,7 @@ def update_umap(
     cluster_labels,
     cluster_names,
     outlier_labels,
+    search_results,
 ) -> go.Figure:
     plot_df = _apply_filter_mask(active_filters)
     kwargs: dict = dict(
@@ -2464,6 +2789,7 @@ def update_umap(
     fig.update_layout(**_SCATTER_LAYOUT, uirevision="umap")
     if ref_graph_enabled and selected_shot is not None:
         _add_reference_graph_overlay(fig, plot_df, "umap_x", "umap_y", selected_shot)
+    _add_search_highlight(fig, plot_df, "umap_x", "umap_y", search_results)
     _add_selection_highlight(fig, plot_df, "umap_x", "umap_y", selected_shot)
     return fig
 
@@ -2481,6 +2807,7 @@ def update_umap(
     Input("cluster-labels", "data"),
     Input("cluster-names", "data"),
     Input("outlier-labels", "data"),
+    Input("search-results", "data"),
 )
 def update_pair_plot(
     x_col,
@@ -2494,6 +2821,7 @@ def update_pair_plot(
     cluster_labels,
     cluster_names,
     outlier_labels,
+    search_results,
 ) -> go.Figure:
     if not x_col or not y_col:
         return go.Figure()
@@ -2534,6 +2862,7 @@ def update_pair_plot(
     )
     if ref_graph_enabled and selected_shot is not None:
         _add_reference_graph_overlay(fig, plot_df, x_col, y_col, selected_shot)
+    _add_search_highlight(fig, plot_df, x_col, y_col, search_results)
     _add_selection_highlight(fig, plot_df, x_col, y_col, selected_shot)
     return fig
 
@@ -3066,6 +3395,109 @@ def update_correlation(features, active_filters):
         yaxis=dict(tickfont=dict(size=10), autorange="reversed"),
     )
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Semantic search callbacks
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("search-query-shot", "value"),
+    Input("search-use-selected-btn", "n_clicks"),
+    State("selected-shot", "data"),
+    prevent_initial_call=True,
+)
+def populate_search_from_selection(_n, selected_shot):
+    return selected_shot
+
+
+@app.callback(
+    Output("search-results", "data"),
+    Output("search-status", "children"),
+    Output("search-results-table", "data"),
+    Input("find-similar-btn", "n_clicks"),
+    State("search-query-shot", "value"),
+    State("search-k", "value"),
+    State("search-features", "value"),
+    prevent_initial_call=True,
+)
+def find_similar_shots(_n, query_shot_id, k, features):
+    if query_shot_id is None:
+        return dash.no_update, "Enter a shot ID first", dash.no_update
+
+    query_id = int(query_shot_id)
+    k = int(k or 10)
+
+    # Find row in the search index
+    idx = np.where(_search_ids == query_id)[0]
+    if len(idx) == 0:
+        return None, f"Shot {query_id} not found in search index", []
+
+    # If the user selected different features, rebuild a local index
+    valid_features = [f for f in (features or _search_cols) if f in df.columns]
+    if valid_features and set(valid_features) != set(_search_cols):
+        sub = df[["shot_id"] + valid_features].dropna()
+        local_ids = sub["shot_id"].values
+        local_X = StandardScaler().fit_transform(sub[valid_features].values.astype(float))
+        local_nn = NearestNeighbors(metric="euclidean", algorithm="auto").fit(local_X)
+        local_idx = np.where(local_ids == query_id)[0]
+        if len(local_idx) == 0:
+            return None, f"Shot {query_id} not found after feature filtering", []
+        distances, indices = local_nn.kneighbors(local_X[local_idx], n_neighbors=min(k + 1, len(local_ids)))
+        result_ids = [int(local_ids[i]) for i in indices[0] if int(local_ids[i]) != query_id][:k]
+        result_scores = [float(d) for i, d in zip(indices[0], distances[0]) if int(local_ids[i]) != query_id][:k]
+    else:
+        distances, indices = _search_nn.kneighbors(_search_X[idx], n_neighbors=min(k + 1, len(_search_ids)))
+        result_ids = [int(_search_ids[i]) for i in indices[0] if int(_search_ids[i]) != query_id][:k]
+        result_scores = [float(d) for i, d in zip(indices[0], distances[0]) if int(_search_ids[i]) != query_id][:k]
+
+    table_data = [
+        {"shot_id": sid, "rank": rank + 1, "score": score}
+        for rank, (sid, score) in enumerate(zip(result_ids, result_scores))
+    ]
+    status = f"{len(result_ids)} shots similar to shot {query_id}"
+    return result_ids, status, table_data
+
+
+if SHOW_NLP_SEARCH:
+
+    @app.callback(
+        Output("search-results", "data", allow_duplicate=True),
+        Output("search-status", "children", allow_duplicate=True),
+        Output("search-results-table", "data", allow_duplicate=True),
+        Output("nlp-interpreted", "children"),
+        Input("nlp-search-btn", "n_clicks"),
+        State("nlp-search-input", "value"),
+        prevent_initial_call=True,
+    )
+    def nlp_search(_n, query):
+        if not query or not str(query).strip():
+            return dash.no_update, "Enter a query first", dash.no_update, ""
+        try:
+            shot_ids, conditions = _nlp_search(
+                query=str(query),
+                df=df,
+                columns=numeric_cols,
+                host=_NLP_HOST,
+                model=_NLP_MODEL,
+            )
+        except Exception as exc:
+            log.error("[NLP search] %s", exc)
+            return None, f"Error: {exc}", [], str(exc)
+
+        if not shot_ids:
+            return None, "No shots matched the query", [], _format_conditions(conditions)
+
+        table_data = [{"shot_id": sid, "rank": i + 1, "score": ""} for i, sid in enumerate(shot_ids)]
+        status = f"{len(shot_ids):,} shots matched"
+        return shot_ids, status, table_data, _format_conditions(conditions)
+
+    def _format_conditions(conditions) -> str:
+        if not conditions:
+            return "No filter conditions generated"
+        parts = [f"{c.column} {c.operator} {c.value}" for c in conditions]
+        return "Interpreted as: " + "  AND  ".join(parts)
 
 
 # ---------------------------------------------------------------------------

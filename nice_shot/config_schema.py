@@ -22,6 +22,12 @@ class UDAOptions(BaseModel):
     timebase_hz: float | None = None
 
 
+class NLPSearchConfig(BaseModel):
+    host: str = "http://localhost:11434"
+    model: str = "llama3.2"
+    enabled: bool = True
+
+
 class AppConfig(BaseModel):
     backend: str = "parquet"
     signals: list[str] = ["ip", "ne", "dalpha", "loopv", "plasma_energy"]
@@ -32,3 +38,4 @@ class AppConfig(BaseModel):
     reference_shot_col: str | None = None
     plugins: list[str] = []
     backend_options: dict[str, Any] = {}
+    nlp_search: NLPSearchConfig | None = None

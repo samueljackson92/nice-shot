@@ -75,6 +75,16 @@ umap_features:
 #   # If omitted, the native time axis of the first successfully loaded signal is used.
 #   timebase_hz: 1000
 
+# NLP-based semantic search (optional).
+# Requires a running Ollama server with a model pulled.
+# To enable: uncomment and point at your Ollama instance.
+# Install Ollama: https://ollama.com
+# Pull a model: ollama pull llama3.2
+#
+# nlp_search:
+#   host: "http://localhost:11434"
+#   model: "llama3.2"   # any model installed in Ollama
+
 # Custom backend plugins.
 # List importable Python module paths. Each module is imported at startup;
 # modules are expected to call register_trace_backend() or
