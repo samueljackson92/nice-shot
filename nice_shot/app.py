@@ -414,8 +414,10 @@ else:
 
 _table_cols = [c for c in df.columns if c not in ("umap_x", "umap_y")]
 _CLUSTER_COLOR_VALUE = "__cluster__"
+_OUTLIER_COLOR_VALUE = "__outliers__"
 _color_col_options = [{"label": c, "value": c} for c in all_cols] + [
-    {"label": "Cluster", "value": _CLUSTER_COLOR_VALUE}
+    {"label": "Cluster", "value": _CLUSTER_COLOR_VALUE},
+    {"label": "Outliers", "value": _OUTLIER_COLOR_VALUE},
 ]
 
 _table_column_defs = [
@@ -842,6 +844,127 @@ def _render_centroid_fig(centroid_data: dict, cluster_names: dict) -> go.Figure:
 
 
 # ---------------------------------------------------------------------------
+# Outlier detection helpers
+# ---------------------------------------------------------------------------
+
+_OUTLIER_ALGORITHMS = [
+    {"label": "Isolation Forest", "value": "isoforest"},
+    {"label": "Local Outlier Factor", "value": "lof"},
+]
+_OUTLIER_RED = "#ff4444"
+_INLIER_BLUE = "#4488cc"
+
+
+def _run_outlier_detection(
+    algorithm: str, features: list[str], contamination: float, n_neighbors: int
+) -> dict:
+    """Return {str(shot_id): 1 (outlier) | 0 (inlier)}."""
+    from sklearn.preprocessing import StandardScaler
+
+    valid = [f for f in features if f in df.columns]
+    if not valid:
+        return {}
+    sub = df[["shot_id"] + valid].dropna()
+    if sub.empty:
+        return {}
+    X = StandardScaler().fit_transform(sub[valid].values.astype(float))
+    if algorithm == "isoforest":
+        from sklearn.ensemble import IsolationForest
+        preds = IsolationForest(contamination=contamination, random_state=42).fit_predict(X)
+    elif algorithm == "lof":
+        from sklearn.neighbors import LocalOutlierFactor
+        preds = LocalOutlierFactor(
+            n_neighbors=int(n_neighbors), contamination=contamination
+        ).fit_predict(X)
+    else:
+        return {}
+    # sklearn: -1 = outlier, 1 = inlier → convert to 1/0
+    return {str(int(sid)): int(p == -1) for sid, p in zip(sub["shot_id"].values, preds)}
+
+
+def _apply_outlier_color(
+    plot_df: pd.DataFrame, outlier_labels: dict
+) -> tuple[pd.DataFrame, str]:
+    """Merge outlier flags into plot_df. Returns (enriched_df, color_col)."""
+    label_map = {int(k): v for k, v in outlier_labels.items()}
+    enriched = plot_df.copy()
+    enriched["_is_outlier"] = enriched["shot_id"].map(label_map)
+    enriched = enriched[enriched["_is_outlier"].notna()].copy()
+    enriched["Outlier"] = enriched["_is_outlier"].apply(
+        lambda v: "Outlier" if int(v) == 1 else "Inlier"
+    )
+    return enriched.drop(columns=["_is_outlier"]), "Outlier"
+
+
+def _compute_outlier_traces_data(outlier_labels: dict, n_samples: int = 5) -> dict | None:
+    """Load time traces for up to n_samples outlier shots.
+    Returns {str(shot_id): {col: [values]}} or None.
+    """
+    if not outlier_labels or not SHOW_TRACES:
+        return None
+    outlier_ids = [int(k) for k, v in outlier_labels.items() if int(v) == 1]
+    if not outlier_ids:
+        return None
+    result: dict[str, dict] = {}
+    for sid in outlier_ids[:n_samples]:
+        try:
+            sdf = load_shot_traces(sid)
+            if sdf is None or sdf.empty:
+                continue
+            entry: dict[str, list] = {"time": sdf["time"].tolist()}
+            for sig in TIME_TRACE_SIGNALS:
+                if sig in sdf.columns:
+                    entry[sig] = sdf[sig].tolist()
+            result[str(sid)] = entry
+        except Exception:
+            pass
+    return result or None
+
+
+def _render_outlier_traces_fig(outlier_traces_data: dict) -> go.Figure:
+    """Overlay individual outlier shot traces in a subplot figure (no I/O)."""
+    available = [
+        s for s in TIME_TRACE_SIGNALS
+        if any(s in td for td in outlier_traces_data.values())
+    ]
+    if not available:
+        return empty_traces_fig("No matching signals in outlier trace data")
+
+    colors = px.colors.qualitative.Plotly
+    shot_ids = sorted(outlier_traces_data.keys(), key=int)
+    n = len(available)
+    fig = make_subplots(
+        rows=n, cols=1, shared_xaxes=True, vertical_spacing=0.04, subplot_titles=available
+    )
+    for idx, sid_str in enumerate(shot_ids):
+        td = outlier_traces_data[sid_str]
+        color = colors[idx % len(colors)]
+        time_arr = td.get("time", [])
+        for i, sig in enumerate(available):
+            if sig not in td:
+                continue
+            fig.add_trace(
+                go.Scatter(
+                    x=time_arr,
+                    y=td[sig],
+                    name=f"Shot {sid_str}",
+                    mode="lines",
+                    line=dict(color=color, width=1.5),
+                    legendgroup=sid_str,
+                    showlegend=(i == 0),
+                ),
+                row=i + 1, col=1,
+            )
+        fig.update_yaxes(
+            title_text=sig, title_font=dict(size=11),
+            row=i + 1, col=1, gridcolor="#333", zerolinecolor="#555",
+        )
+    fig.update_xaxes(title_text="Time (s)", row=n, col=1, gridcolor="#333", zerolinecolor="#555")
+    fig.update_layout(**_trace_layout(), showlegend=True, legend=dict(bgcolor="rgba(0,0,0,0)"))
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # Reference-graph helpers
 # ---------------------------------------------------------------------------
 
@@ -1024,6 +1147,8 @@ app.layout = html.Div(
         dcc.Store(id="cluster-labels", data=None),
         dcc.Store(id="cluster-names", data={}),
         dcc.Store(id="centroid-data", data=None),
+        dcc.Store(id="outlier-labels", data=None),
+        dcc.Store(id="outlier-traces-data", data=None),
         dcc.Download(id="table-download"),
         # Header
         html.Div(
@@ -1283,6 +1408,56 @@ app.layout = html.Div(
                                         ),
                                     ],
                                 ),
+                                dcc.Tab(
+                                    label="Outlier Traces",
+                                    value="outlier-traces",
+                                    style=dict(
+                                        color=TEXT,
+                                        backgroundColor=PANEL_BG,
+                                        fontSize="12px",
+                                        padding="4px 10px",
+                                    ),
+                                    selected_style=dict(
+                                        color=ACCENT,
+                                        backgroundColor=DARK_BG,
+                                        borderTop=f"2px solid {ACCENT}",
+                                        fontSize="12px",
+                                        padding="4px 10px",
+                                    ),
+                                    children=[
+                                        html.Div(
+                                            style=dict(
+                                                display="flex",
+                                                alignItems="center",
+                                                padding="6px 4px 6px",
+                                            ),
+                                            children=[
+                                                html.Span(
+                                                    id="outlier-traces-status",
+                                                    style=dict(fontSize="11px", color="#888"),
+                                                ),
+                                            ],
+                                        ),
+                                        dcc.Loading(
+                                            type="circle",
+                                            color=ACCENT,
+                                            children=dcc.Graph(
+                                                id="outlier-traces-plot",
+                                                figure=empty_traces_fig(
+                                                    "Run outlier detection to load sample traces"
+                                                ),
+                                                responsive=True,
+                                                config=dict(
+                                                    displayModeBar=True, displaylogo=False
+                                                ),
+                                                style=dict(
+                                                    height="calc(100vh - 465px)",
+                                                    minHeight="200px",
+                                                ),
+                                            ),
+                                        ),
+                                    ],
+                                ),
                             ],
                         ),
                         html.Div(
@@ -1469,6 +1644,140 @@ app.layout = html.Div(
                                                         ),
                                                         # Cluster name inputs (rendered dynamically)
                                                         html.Div(id="cluster-name-inputs"),
+                                                    ],
+                                                ),
+                                            ],
+                                        ),
+                                        dcc.Tab(
+                                            label="Outlier Detection",
+                                            value="outliers",
+                                            style=dict(
+                                                color=TEXT,
+                                                backgroundColor=PANEL_BG,
+                                                fontSize="12px",
+                                                padding="4px 10px",
+                                            ),
+                                            selected_style=dict(
+                                                color=ACCENT,
+                                                backgroundColor=DARK_BG,
+                                                borderTop=f"2px solid {ACCENT}",
+                                                fontSize="12px",
+                                                padding="4px 10px",
+                                            ),
+                                            children=[
+                                                html.Div(
+                                                    style=dict(
+                                                        padding="8px 4px",
+                                                        overflowY="auto",
+                                                        maxHeight="150px",
+                                                    ),
+                                                    children=[
+                                                        html.Div(
+                                                            style=dict(
+                                                                display="flex",
+                                                                gap="8px",
+                                                                marginBottom="6px",
+                                                                flexWrap="wrap",
+                                                                alignItems="flex-end",
+                                                            ),
+                                                            children=[
+                                                                _cluster_param_block(
+                                                                    "Algorithm",
+                                                                    dcc.Dropdown(
+                                                                        id="outlier-algorithm",
+                                                                        options=_OUTLIER_ALGORITHMS,
+                                                                        value="isoforest",
+                                                                        clearable=False,
+                                                                        style=dict(
+                                                                            backgroundColor="#16213e",
+                                                                            color="#000",
+                                                                            width="140px",
+                                                                            fontSize="11px",
+                                                                        ),
+                                                                    ),
+                                                                ),
+                                                                _cluster_param_block(
+                                                                    "contamination",
+                                                                    dcc.Input(
+                                                                        id="outlier-contamination",
+                                                                        type="number",
+                                                                        value=0.1,
+                                                                        min=0.01,
+                                                                        max=0.5,
+                                                                        step=0.01,
+                                                                        style=_CLUSTER_INPUT_STYLE,
+                                                                    ),
+                                                                ),
+                                                                _cluster_param_block(
+                                                                    "n_neighbors",
+                                                                    dcc.Input(
+                                                                        id="outlier-n-neighbors",
+                                                                        type="number",
+                                                                        value=20,
+                                                                        min=2,
+                                                                        step=1,
+                                                                        style=_CLUSTER_INPUT_STYLE,
+                                                                    ),
+                                                                ),
+                                                            ],
+                                                        ),
+                                                        html.Div(
+                                                            style=dict(marginBottom="6px"),
+                                                            children=[
+                                                                html.Label(
+                                                                    "Features",
+                                                                    style=_CLUSTER_LABEL_STYLE,
+                                                                ),
+                                                                dcc.Dropdown(
+                                                                    id="outlier-features",
+                                                                    options=[
+                                                                        {"label": c, "value": c}
+                                                                        for c in numeric_cols
+                                                                    ],
+                                                                    value=(
+                                                                        UMAP_FEATURES or numeric_cols
+                                                                    )[:8],
+                                                                    multi=True,
+                                                                    placeholder="Select feature columns...",
+                                                                    style=dict(
+                                                                        backgroundColor="#16213e",
+                                                                        color="#000",
+                                                                        fontSize="11px",
+                                                                    ),
+                                                                ),
+                                                            ],
+                                                        ),
+                                                        html.Div(
+                                                            style=dict(
+                                                                display="flex",
+                                                                alignItems="center",
+                                                                gap="8px",
+                                                            ),
+                                                            children=[
+                                                                html.Button(
+                                                                    "Run outlier detection",
+                                                                    id="run-outlier-btn",
+                                                                    n_clicks=0,
+                                                                    style=dict(
+                                                                        backgroundColor=_OUTLIER_RED,
+                                                                        color="#fff",
+                                                                        border="none",
+                                                                        padding="4px 12px",
+                                                                        cursor="pointer",
+                                                                        borderRadius="4px",
+                                                                        fontSize="11px",
+                                                                        fontWeight="600",
+                                                                    ),
+                                                                ),
+                                                                html.Span(
+                                                                    id="outlier-status",
+                                                                    style=dict(
+                                                                        fontSize="11px",
+                                                                        color="#888",
+                                                                    ),
+                                                                ),
+                                                            ],
+                                                        ),
                                                     ],
                                                 ),
                                             ],
@@ -2162,9 +2471,11 @@ if SHOW_REF_TOGGLE:
     Input("ref-graph-enabled", "data"),
     Input("cluster-labels", "data"),
     Input("cluster-names", "data"),
+    Input("outlier-labels", "data"),
 )
 def update_umap(
-    color_col, active_filters, selected_shot, ref_graph_enabled, cluster_labels, cluster_names
+    color_col, active_filters, selected_shot, ref_graph_enabled,
+    cluster_labels, cluster_names, outlier_labels,
 ) -> go.Figure:
     plot_df = _apply_filter_mask(active_filters)
     kwargs: dict = dict(
@@ -2179,6 +2490,11 @@ def update_umap(
         enriched, col = _apply_cluster_color(plot_df, cluster_labels, cluster_names or {})
         kwargs["data_frame"] = enriched
         kwargs["color"] = col
+    elif color_col == _OUTLIER_COLOR_VALUE and outlier_labels:
+        enriched, col = _apply_outlier_color(plot_df, outlier_labels)
+        kwargs["data_frame"] = enriched
+        kwargs["color"] = col
+        kwargs["color_discrete_map"] = {"Outlier": _OUTLIER_RED, "Inlier": _INLIER_BLUE}
     elif color_col and color_col in plot_df.columns:
         valid = plot_df[color_col].notna()
         if valid.any():
@@ -2209,6 +2525,7 @@ def update_umap(
     Input("ref-graph-enabled", "data"),
     Input("cluster-labels", "data"),
     Input("cluster-names", "data"),
+    Input("outlier-labels", "data"),
 )
 def update_pair_plot(
     x_col,
@@ -2221,6 +2538,7 @@ def update_pair_plot(
     ref_graph_enabled,
     cluster_labels,
     cluster_names,
+    outlier_labels,
 ) -> go.Figure:
     if not x_col or not y_col:
         return go.Figure()
@@ -2237,6 +2555,11 @@ def update_pair_plot(
         enriched, col = _apply_cluster_color(plot_df, cluster_labels, cluster_names or {})
         kwargs["data_frame"] = enriched
         kwargs["color"] = col
+    elif color_col == _OUTLIER_COLOR_VALUE and outlier_labels:
+        enriched, col = _apply_outlier_color(plot_df, outlier_labels)
+        kwargs["data_frame"] = enriched
+        kwargs["color"] = col
+        kwargs["color_discrete_map"] = {"Outlier": _OUTLIER_RED, "Inlier": _INLIER_BLUE}
     elif color_col and color_col in plot_df.columns:
         valid = plot_df[color_col].notna()
         if valid.any():
@@ -2622,6 +2945,70 @@ def download_table(n_clicks, cluster_labels, cluster_names):
 
         export["cluster_name"] = export["cluster_id"].apply(_cname)
     return dcc.send_data_frame(export.to_csv, "niceshot_export.csv", index=False)
+
+
+# ---------------------------------------------------------------------------
+# Outlier detection callbacks
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("outlier-labels", "data"),
+    Output("outlier-status", "children"),
+    Output("umap-color-col", "value"),
+    Input("run-outlier-btn", "n_clicks"),
+    State("outlier-algorithm", "value"),
+    State("outlier-features", "value"),
+    State("outlier-contamination", "value"),
+    State("outlier-n-neighbors", "value"),
+    prevent_initial_call=True,
+)
+def run_outlier_detection(n_clicks, algorithm, features, contamination, n_neighbors):
+    if not features:
+        return dash.no_update, "Select at least one feature", dash.no_update
+    try:
+        labels = _run_outlier_detection(
+            algorithm=algorithm or "isoforest",
+            features=list(features),
+            contamination=float(contamination or 0.1),
+            n_neighbors=int(n_neighbors or 20),
+        )
+    except Exception as exc:
+        log.error("[outliers] %s", exc)
+        return dash.no_update, f"Error: {exc}", dash.no_update
+    if not labels:
+        return None, "No shots processed — check features", dash.no_update
+    n_out = sum(v for v in labels.values())
+    pct = 100 * n_out / len(labels)
+    msg = f"{n_out:,} outliers ({pct:.1f}%) across {len(labels):,} shots"
+    return labels, msg, _OUTLIER_COLOR_VALUE
+
+
+@app.callback(
+    Output("outlier-traces-data", "data"),
+    Input("outlier-labels", "data"),
+    prevent_initial_call=True,
+)
+def compute_outlier_traces(outlier_labels):
+    return _compute_outlier_traces_data(outlier_labels)
+
+
+@app.callback(
+    Output("outlier-traces-plot", "figure"),
+    Output("outlier-traces-status", "children"),
+    Input("outlier-traces-data", "data"),
+)
+def render_outlier_traces(outlier_traces_data):
+    if not outlier_traces_data:
+        if not SHOW_TRACES:
+            return (
+                empty_traces_fig("No data directory — pass --data-dir to enable time traces"),
+                "",
+            )
+        return empty_traces_fig("Run outlier detection to load sample traces"), ""
+    fig = _render_outlier_traces_fig(outlier_traces_data)
+    n = len(outlier_traces_data)
+    return fig, f"Showing {n} outlier sample(s)"
 
 
 # ---------------------------------------------------------------------------
