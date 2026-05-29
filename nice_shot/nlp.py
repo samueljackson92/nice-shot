@@ -23,18 +23,25 @@ log = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = """\
 You are a filter assistant for a tokamak plasma physics shot database.
-The database has these numeric columns: {columns}.
-A sample row is: {sample}.
 
-Translate the user's query into a JSON array of filter conditions. Each
-condition must be an object with exactly three keys:
-  "column"   — one of the column names listed above
+The available columns and a representative value for each are listed below.
+Use ONLY the exact column names shown — do not invent or shorten names.
+
+{column_table}
+
+Translate the user's query into a JSON array of filter conditions.
+Each condition must be an object with exactly three keys:
+  "column"   — one of the exact column names listed above
   "operator" — one of: >=  <=  >  <  ==  !=  contains
   "value"    — a number or a string (for "contains")
 
-Return ONLY valid JSON. No explanation, no markdown, no code fences.
-Example: [{{"column": "ip_max", "operator": ">=", "value": 500000}}]
-If the query cannot be mapped to any column, return an empty array: []
+Rules:
+- Return ONLY valid JSON. No explanation, no markdown, no code fences.
+- If multiple conditions are needed, include all of them in the array.
+- If the query cannot be mapped to any column, return an empty array: []
+
+Example output:
+[{{"column": "ip_max", "operator": ">=", "value": 500000}}]
 """
 
 
@@ -45,12 +52,54 @@ class FilterCondition:
     value: float | str
 
 
+def _build_column_table(columns: list[str], sample: dict) -> str:
+    """Format columns with their sample values for the system prompt."""
+    lines = []
+    for col in columns:
+        val = sample.get(col)
+        if val is None:
+            lines.append(f"  {col}")
+        elif isinstance(val, float):
+            lines.append(f"  {col} (e.g. {val:.4g})")
+        else:
+            lines.append(f"  {col} (e.g. {val})")
+    return "\n".join(lines)
+
+
 def _build_prompt(query: str, columns: list[str], sample: dict) -> tuple[str, str]:
-    system = _SYSTEM_PROMPT.format(
-        columns=", ".join(columns),
-        sample=json.dumps({k: v for k, v in list(sample.items())[:20]}, default=str),
-    )
+    column_table = _build_column_table(columns, sample)
+    system = _SYSTEM_PROMPT.format(column_table=column_table)
     return system, query
+
+
+def _resolve_column(name: str, available: list[str]) -> str | None:
+    """Return the best matching column name from *available* for *name*.
+
+    Resolution order:
+    1. Exact match
+    2. Case-insensitive exact match
+    3. Unique starts-with match  (e.g. "pnbi_max" → "pnbi_max_ss")
+    4. Unique contains match     (e.g. "nbi_ss"   → "pnbi_max_ss")
+    """
+    if name in available:
+        return name
+
+    lower_map = {c.lower(): c for c in available}
+    if name.lower() in lower_map:
+        return lower_map[name.lower()]
+
+    prefix = [c for c in available if c.lower().startswith(name.lower())]
+    if len(prefix) == 1:
+        log.info("[NLP] resolved '%s' → '%s' (prefix match)", name, prefix[0])
+        return prefix[0]
+
+    contains = [c for c in available if name.lower() in c.lower()]
+    if len(contains) == 1:
+        log.info("[NLP] resolved '%s' → '%s' (contains match)", name, contains[0])
+        return contains[0]
+
+    log.warning("[NLP] could not resolve column '%s' — skipping", name)
+    return None
 
 
 def _call_ollama(system: str, user: str, host: str, model: str) -> str:
@@ -74,7 +123,7 @@ def _call_ollama(system: str, user: str, host: str, model: str) -> str:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=60) as resp:
             body = json.loads(resp.read().decode())
             return body["message"]["content"]
     except urllib.error.URLError as exc:
@@ -83,14 +132,20 @@ def _call_ollama(system: str, user: str, host: str, model: str) -> str:
 
 def _parse_conditions(raw: str) -> list[FilterCondition]:
     """Extract and validate a JSON array of filter conditions from the LLM response."""
-    raw = raw.strip()
+    text = raw.strip()
     # Strip markdown fences if the model added them despite being told not to.
-    if raw.startswith("```"):
-        lines = raw.splitlines()
-        raw = "\n".join(ln for ln in lines if not ln.startswith("```"))
+    if text.startswith("```"):
+        lines = text.splitlines()
+        text = "\n".join(ln for ln in lines if not ln.startswith("```"))
+
+    # Extract the first JSON array if the model wrapped it in prose.
+    start = text.find("[")
+    end = text.rfind("]")
+    if start != -1 and end != -1 and end > start:
+        text = text[start : end + 1]
 
     try:
-        items = json.loads(raw)
+        items = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ValueError(f"LLM returned non-JSON: {raw!r}") from exc
 
@@ -110,17 +165,27 @@ def _parse_conditions(raw: str) -> list[FilterCondition]:
     return conditions
 
 
-def apply_conditions(df: pd.DataFrame, conditions: list[FilterCondition]) -> list[int]:
-    """Apply *conditions* to *df* and return matching ``shot_id`` values."""
-    if not conditions:
-        return []
+def apply_conditions(df: pd.DataFrame, conditions: list[FilterCondition]) -> tuple[list[int], list[FilterCondition]]:
+    """Apply *conditions* to *df* with fuzzy column resolution.
 
+    Returns *(shot_ids, resolved_conditions)* where *resolved_conditions*
+    reflects the actual column names used after resolution.
+    """
+    if not conditions:
+        return [], []
+
+    available = list(df.columns)
+    resolved: list[FilterCondition] = []
     masks = []
+
     for cond in conditions:
-        if cond.column not in df.columns:
-            log.warning("NLP search: column '%s' not in DataFrame — skipping", cond.column)
+        real_col = _resolve_column(cond.column, available)
+        if real_col is None:
             continue
-        s = df[cond.column]
+        cond_resolved = FilterCondition(column=real_col, operator=cond.operator, value=cond.value)
+        resolved.append(cond_resolved)
+
+        s = df[real_col]
         try:
             v: float | str = float(cond.value)  # type: ignore[arg-type]
         except (TypeError, ValueError):
@@ -142,16 +207,16 @@ def apply_conditions(df: pd.DataFrame, conditions: list[FilterCondition]) -> lis
             elif cond.operator == "contains":
                 masks.append(s.astype(str).str.contains(str(cond.value), case=False, na=False))
         except Exception as exc:
-            log.warning("NLP search: error applying condition %s: %s", cond, exc)
+            log.warning("NLP search: error applying condition %s: %s", cond_resolved, exc)
 
     if not masks:
-        return []
+        return [], resolved
 
     mask = masks[0]
     for m in masks[1:]:
         mask = mask & m
 
-    return df.loc[mask, "shot_id"].tolist()
+    return df.loc[mask, "shot_id"].tolist(), resolved
 
 
 def search(
@@ -160,8 +225,8 @@ def search(
     columns: list[str],
     host: str,
     model: str,
-) -> tuple[list[int], list[FilterCondition]]:
-    """Translate *query* via Ollama and return (shot_ids, conditions).
+) -> tuple[list[int], list[FilterCondition], str]:
+    """Translate *query* via Ollama and return *(shot_ids, conditions, raw_response)*.
 
     Raises :exc:`ConnectionError` if Ollama is unreachable, or
     :exc:`ValueError` if the LLM response cannot be parsed.
@@ -169,7 +234,7 @@ def search(
     sample = df[columns].dropna().iloc[0].to_dict() if not df[columns].dropna().empty else {}
     system, user = _build_prompt(query, columns, sample)
     raw = _call_ollama(system, user, host, model)
-    log.info("[NLP] raw LLM response: %s", raw[:200])
+    log.info("[NLP] raw LLM response: %s", raw[:400])
     conditions = _parse_conditions(raw)
-    shot_ids = apply_conditions(df, conditions)
-    return shot_ids, conditions
+    shot_ids, resolved = apply_conditions(df, conditions)
+    return shot_ids, resolved, raw

@@ -3601,7 +3601,7 @@ if SHOW_NLP_SEARCH:
         if not query or not str(query).strip():
             return dash.no_update, "Enter a query first", dash.no_update, ""
         try:
-            shot_ids, conditions = _nlp_search(
+            shot_ids, conditions, raw = _nlp_search(
                 query=str(query),
                 df=df,
                 columns=numeric_cols,
@@ -3610,20 +3610,56 @@ if SHOW_NLP_SEARCH:
             )
         except Exception as exc:
             log.error("[NLP search] %s", exc)
-            return None, f"Error: {exc}", [], str(exc)
+            return None, f"Error: {exc}", [], _nlp_output_panel(error=str(exc))
+
+        panel = _nlp_output_panel(raw=raw, conditions=conditions)
 
         if not shot_ids:
-            return None, "No shots matched the query", [], _format_conditions(conditions)
+            return None, "No shots matched", [], panel
 
         table_data = [{"shot_id": sid, "rank": i + 1, "score": ""} for i, sid in enumerate(shot_ids)]
-        status = f"{len(shot_ids):,} shots matched"
-        return shot_ids, status, table_data, _format_conditions(conditions)
+        return shot_ids, f"{len(shot_ids):,} shots matched", table_data, panel
 
-    def _format_conditions(conditions) -> str:
-        if not conditions:
-            return "No filter conditions generated"
-        parts = [f"{c.column} {c.operator} {c.value}" for c in conditions]
-        return "Interpreted as: " + "  AND  ".join(parts)
+    def _nlp_output_panel(
+        raw: str = "",
+        conditions=None,
+        error: str = "",
+    ):
+        _label = dict(fontSize="10px", color="#666", marginBottom="2px", display="block")
+        _code = dict(
+            fontSize="10px",
+            color="#ccc",
+            backgroundColor="#0f0f23",
+            border="1px solid #2a2a4a",
+            borderRadius="3px",
+            padding="6px 8px",
+            overflowX="auto",
+            whiteSpace="pre-wrap",
+            wordBreak="break-all",
+            marginBottom="8px",
+        )
+        children: list = []
+
+        if error:
+            children.append(html.Span(error, style=dict(fontSize="11px", color="#ff6666")))
+            return html.Div(children, style=dict(marginTop="6px"))
+
+        if raw:
+            children += [
+                html.Span("Model response:", style=_label),
+                html.Pre(raw.strip(), style=_code),
+            ]
+
+        if conditions:
+            parts = "  AND  ".join(f"{c.column} {c.operator} {c.value}" for c in conditions)
+            children += [
+                html.Span("Interpreted as:", style=_label),
+                html.Pre(parts, style={**_code, "color": "#aaffaa"}),
+            ]
+        elif raw:
+            children.append(html.Span("No valid filter conditions found in response.", style=_label))
+
+        return html.Div(children, style=dict(marginTop="6px"))
 
 
 # ---------------------------------------------------------------------------
