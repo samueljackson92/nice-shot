@@ -21,7 +21,7 @@ An interactive dashboard for exploring tokamak plasma shot data. Point it at a s
 - **CSV export** — download the full data table with `cluster_id`, `cluster_name` columns appended when clustering has been run.
 - **SHAP decision plots** — per-shot feature attribution rendered inline (optional, requires `--shap-data`).
 - **Reference graph** — overlay the full reference-shot lineage on any scatter plot (optional, requires `reference_shot_col` in config).
-- **Semantic search** — find shots similar to a selected one via nearest-neighbour search in feature space; or type a plain-English query translated into filters by a local Ollama LLM (optional).
+- **Semantic search** — find shots similar to a selected one via nearest-neighbour search in feature space. Results are highlighted on the scatter plots with gold ring markers.
 - **Extensible backends** — add support for new data sources (MDSplus, HDF5, custom APIs, …) by subclassing `TraceBackend` or `ShotDataBackend` and registering via `plugins:` in config.
 
 

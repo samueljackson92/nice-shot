@@ -283,6 +283,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#development-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Development mode
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#minimal-example" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -423,6 +434,67 @@
       </span>
     </span>
   </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#semantic-shot-search" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Semantic shot search
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#custom-backends" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Custom backends
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Custom backends">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#writing-a-custom-trace-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Writing a custom trace backend
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#writing-a-custom-shot-data-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Writing a custom shot data backend
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#plugin-loading-order" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Plugin loading order
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -560,6 +632,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#development-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Development mode
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#minimal-example" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -704,6 +787,67 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#semantic-shot-search" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Semantic shot search
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#custom-backends" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Custom backends
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Custom backends">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#writing-a-custom-trace-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Writing a custom trace backend
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#writing-a-custom-shot-data-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Writing a custom shot data backend
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#plugin-loading-order" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Plugin loading order
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#cli-reference" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -741,34 +885,39 @@
 <div class="language-sh highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>nice-shot<span class="w"> </span>--shot-data<span class="w"> </span>path/to/shot_stats.parquet
 </span></code></pre></div>
 <p>Open <code>http://localhost:8050</code> in a browser.</p>
-<p>The first run computes the UMAP projection and caches it. Subsequent starts load from cache unless the data file or <code>umap_features</code> list changes.</p>
+<p>By default <code>nice-shot</code> starts a <strong>gunicorn</strong> server with 4 worker processes, suitable for multiple concurrent users. The first run computes and caches the UMAP/PCA projection in the master process before workers are forked; subsequent starts are instant.</p>
+<hr />
+<h2 id="development-mode">Development mode<a class="headerlink" href="#development-mode" title="Permanent link">&para;</a></h2>
+<p>For local development with Dash hot-reload use <code>--debug</code>. This starts the single-process Flask dev server instead of gunicorn:</p>
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>nice-shot<span class="w"> </span>--shot-data<span class="w"> </span>path/to/shot_stats.parquet<span class="w"> </span>--debug
+</span></code></pre></div>
 <hr />
 <h2 id="minimal-example">Minimal example<a class="headerlink" href="#minimal-example" title="Permanent link">&para;</a></h2>
 <p>If you have a single parquet file of shot statistics and nothing else:</p>
-<div class="language-sh highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>nice-shot<span class="w"> </span>--shot-data<span class="w"> </span>outputs/shot_stats.parquet<span class="w"> </span>--no-debug
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>nice-shot<span class="w"> </span>--shot-data<span class="w"> </span>outputs/shot_stats.parquet
 </span></code></pre></div>
 <p>The time-trace panel is hidden automatically when <code>--data-dir</code> does not exist or is empty.</p>
 <hr />
 <h2 id="with-per-shot-time-traces-parquet-backend">With per-shot time traces (parquet backend)<a class="headerlink" href="#with-per-shot-time-traces-parquet-backend" title="Permanent link">&para;</a></h2>
 <p>Lay out per-shot files under a directory:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>data/mastu/
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>  &lt;subdir&gt;/
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    45000.parquet
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    45001.parquet
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    ...
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>data/mastu/
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>  &lt;subdir&gt;/
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    45000.parquet
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    45001.parquet
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    ...
 </span></code></pre></div>
 <p>Each file must have a <code>time</code> column and one column per signal. Then:</p>
-<div class="language-sh highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>nice-shot<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--shot-data<span class="w"> </span>outputs/shot_stats.parquet<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>--data-dir<span class="w"> </span>data/mastu<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span>--config<span class="w"> </span>configs/config_mastu.yml
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>nice-shot<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--shot-data<span class="w"> </span>outputs/shot_stats.parquet<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--data-dir<span class="w"> </span>data/mastu<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>--config<span class="w"> </span>configs/config_mastu.yml
 </span></code></pre></div>
 <hr />
 <h2 id="with-a-pre-computed-projection">With a pre-computed projection<a class="headerlink" href="#with-a-pre-computed-projection" title="Permanent link">&para;</a></h2>
 <p>Skip UMAP computation entirely by supplying your own 2-D embedding:</p>
-<div class="language-sh highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>nice-shot<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--shot-data<span class="w"> </span>outputs/shot_stats.parquet<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--projection<span class="w"> </span>outputs/my_embedding.parquet
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>nice-shot<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span>--shot-data<span class="w"> </span>outputs/shot_stats.parquet<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--projection<span class="w"> </span>outputs/my_embedding.parquet
 </span></code></pre></div>
 <p>See <a href="../data-formats/">Data Formats</a> for accepted shapes.</p>
 <hr />
@@ -836,11 +985,74 @@
 </ul>
 <hr />
 <h2 id="with-shap-values">With SHAP values<a class="headerlink" href="#with-shap-values" title="Permanent link">&para;</a></h2>
-<div class="language-sh highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>nice-shot<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span>--shot-data<span class="w"> </span>outputs/shot_stats.parquet<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--shap-data<span class="w"> </span>outputs/shap_values.nc
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>nice-shot<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span>--shot-data<span class="w"> </span>outputs/shot_stats.parquet<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span>--shap-data<span class="w"> </span>outputs/shap_values.nc
 </span></code></pre></div>
 <p>A <strong>SHAP</strong> tab appears in the left panel. Click any point to see its decision plot.</p>
+<hr />
+<h2 id="semantic-shot-search">Semantic shot search<a class="headerlink" href="#semantic-shot-search" title="Permanent link">&para;</a></h2>
+<p>The <strong>Search</strong> tab (right pane) lets you find shots similar to a selected one using nearest-neighbour search in feature space.</p>
+<ol>
+<li>Click a shot on the scatter plot — the search runs automatically. Or type a shot ID directly and click <strong>"Find similar shots"</strong>.</li>
+<li>Set <strong>K</strong> — how many similar shots to return (default: 10).</li>
+<li>Optionally adjust the <strong>features</strong> used for similarity (defaults to the same columns as the projection).</li>
+</ol>
+<p>Results appear as gold ring markers on the Projection and Pairwise Scatter plots, fading from bright (most similar) to dim (least similar). A ranked table with distance scores and time traces for the similar shots are shown in the tab. Use the <strong>"Similar shots: ON/OFF"</strong> toggle in the left panel to hide the markers without clearing the results.</p>
+<hr />
+<h2 id="custom-backends">Custom backends<a class="headerlink" href="#custom-backends" title="Permanent link">&para;</a></h2>
+<p>NiceShot! uses a registry/factory system so you can add support for new data sources without modifying the app code. Two extension points are available:</p>
+<ul>
+<li><strong><code>TraceBackend</code></strong> — how per-shot time-series are loaded (new instrument backends, custom file formats, remote APIs, etc.)</li>
+<li><strong><code>ShotDataBackend</code></strong> — how the shot-statistics table is loaded (new file formats such as HDF5, Zarr, databases, etc.)</li>
+</ul>
+<h3 id="writing-a-custom-trace-backend">Writing a custom trace backend<a class="headerlink" href="#writing-a-custom-trace-backend" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># my_package/my_backends.py</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pandas</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pd</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">nice_shot.backends</span><span class="w"> </span><span class="kn">import</span> <span class="n">BackendConfig</span><span class="p">,</span> <span class="n">TraceBackend</span><span class="p">,</span> <span class="n">register_trace_backend</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="k">class</span><span class="w"> </span><span class="nc">MdsTraceBackend</span><span class="p">(</span><span class="n">TraceBackend</span><span class="p">):</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">BackendConfig</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_server</span> <span class="o">=</span> <span class="n">config</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;server&quot;</span><span class="p">,</span> <span class="s2">&quot;localhost&quot;</span><span class="p">)</span>
+</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>
+</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">load</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">shot_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>        <span class="c1"># fetch data for shot_id and return a DataFrame with a</span>
+</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>        <span class="c1"># &#39;time&#39; column and one column per signal, or None</span>
+</span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a>        <span class="o">...</span>
+</span><span id="__span-9-14"><a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a>
+</span><span id="__span-9-15"><a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">is_available</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+</span><span id="__span-9-16"><a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a>        <span class="k">return</span> <span class="kc">True</span>  <span class="c1"># or check connectivity</span>
+</span><span id="__span-9-17"><a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a>
+</span><span id="__span-9-18"><a id="__codelineno-9-18" name="__codelineno-9-18" href="#__codelineno-9-18"></a><span class="n">register_trace_backend</span><span class="p">(</span><span class="s2">&quot;mds&quot;</span><span class="p">,</span> <span class="n">MdsTraceBackend</span><span class="p">)</span>
+</span></code></pre></div>
+<p>Then in <code>config.yaml</code>:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mds</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="nt">plugins</span><span class="p">:</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_package.my_backends</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="nt">backend_options</span><span class="p">:</span>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">  </span><span class="nt">server</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;mds.mylab.ac.uk&quot;</span>
+</span></code></pre></div>
+<h3 id="writing-a-custom-shot-data-backend">Writing a custom shot data backend<a class="headerlink" href="#writing-a-custom-shot-data-backend" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># my_package/my_backends.py</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pandas</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pd</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">nice_shot.backends</span><span class="w"> </span><span class="kn">import</span> <span class="n">BackendConfig</span><span class="p">,</span> <span class="n">ShotDataBackend</span><span class="p">,</span> <span class="n">register_shot_data_backend</span>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="k">class</span><span class="w"> </span><span class="nc">HDF5ShotDataBackend</span><span class="p">(</span><span class="n">ShotDataBackend</span><span class="p">):</span>
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">load</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">:</span>
+</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>        <span class="kn">import</span><span class="w"> </span><span class="nn">h5py</span>
+</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>        <span class="c1"># load from HDF5 and return a normalised DataFrame</span>
+</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>        <span class="c1"># (must have a &#39;shot_id&#39; column — call self._prepare(df) to auto-detect)</span>
+</span><span id="__span-11-10"><a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>        <span class="o">...</span>
+</span><span id="__span-11-11"><a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>
+</span><span id="__span-11-12"><a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a><span class="n">register_shot_data_backend</span><span class="p">(</span><span class="s2">&quot;.h5&quot;</span><span class="p">,</span> <span class="n">HDF5ShotDataBackend</span><span class="p">)</span>
+</span><span id="__span-11-13"><a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a><span class="n">register_shot_data_backend</span><span class="p">(</span><span class="s2">&quot;.hdf5&quot;</span><span class="p">,</span> <span class="n">HDF5ShotDataBackend</span><span class="p">)</span>
+</span></code></pre></div>
+<p>The backend is selected automatically from the file extension of <code>--shot-data</code>.</p>
+<h3 id="plugin-loading-order">Plugin loading order<a class="headerlink" href="#plugin-loading-order" title="Permanent link">&para;</a></h3>
+<p>Plugins listed under <code>plugins:</code> are imported in order before the backends are instantiated, so all <code>register_*</code> calls take effect in time.</p>
 <hr />
 <h2 id="cli-reference">CLI reference<a class="headerlink" href="#cli-reference" title="Permanent link">&para;</a></h2>
 <table>
@@ -893,9 +1105,14 @@
 <td>Port</td>
 </tr>
 <tr>
+<td><code>--workers N</code></td>
+<td><code>4</code></td>
+<td>Gunicorn worker processes (production mode only)</td>
+</tr>
+<tr>
 <td><code>--debug / --no-debug</code></td>
-<td>debug on</td>
-<td>Dash debug / hot-reload mode</td>
+<td>off</td>
+<td>Use Flask dev server instead of gunicorn</td>
 </tr>
 </tbody>
 </table>

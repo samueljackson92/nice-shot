@@ -161,42 +161,13 @@ A **SHAP** tab appears in the left panel. Click any point to see its decision pl
 
 ## Semantic shot search
 
-The **Search** tab (right pane) provides two ways to find shots by meaning rather than exact numeric criteria.
+The **Search** tab (right pane) lets you find shots similar to a selected one using nearest-neighbour search in feature space.
 
-### Nearest-neighbour similarity search
-
-Always available, no external services required.
-
-1. Click a shot on the scatter plot then click **"Use selected"**, or type a shot ID directly.
+1. Click a shot on the scatter plot — the search runs automatically. Or type a shot ID directly and click **"Find similar shots"**.
 2. Set **K** — how many similar shots to return (default: 10).
 3. Optionally adjust the **features** used for similarity (defaults to the same columns as the projection).
-4. Click **"Find similar shots"**.
 
-Results appear as gold ring markers on the Projection and Pairwise Scatter plots, fading from bright (most similar) to dim (least similar). A ranked table with distance scores is shown below the controls.
-
-### Natural language search (optional — requires Ollama)
-
-When `nlp_search:` is configured, a second search panel appears where you can type plain-English queries like:
-
-> "high plasma current, q95 greater than 3, no disruption"
-
-The query is sent to a local [Ollama](https://ollama.com) LLM, which translates it into filter conditions. The interpreted conditions are shown back to you, and matching shots are highlighted on the scatter plots.
-
-**Setup:**
-
-1. Install Ollama and pull a model:
-   ```sh
-   ollama pull llama3.2
-   ```
-2. Add to `config.yaml`:
-   ```yaml
-   nlp_search:
-     host: "http://localhost:11434"
-     model: "llama3.2"
-   ```
-3. Start `nice-shot` as normal — the NLP panel appears automatically.
-
-Any Ollama-compatible model can be used. `llama3.2` (3 B parameters) is a good default; `mistral` or `phi3:mini` are also effective.
+Results appear as gold ring markers on the Projection and Pairwise Scatter plots, fading from bright (most similar) to dim (least similar). A ranked table with distance scores and time traces for the similar shots are shown in the tab. Use the **"Similar shots: ON/OFF"** toggle in the left panel to hide the markers without clearing the results.
 
 ---
 

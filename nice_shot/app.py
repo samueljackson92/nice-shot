@@ -400,17 +400,6 @@ _table_column_defs = [
 ]
 
 # ---------------------------------------------------------------------------
-# NLP search config
-# ---------------------------------------------------------------------------
-SHOW_NLP_SEARCH: bool = _cfg.nlp_search is not None and _cfg.nlp_search.enabled
-if SHOW_NLP_SEARCH:
-    from nice_shot.nlp import search as _nlp_search
-
-    _NLP_HOST: str = _cfg.nlp_search.host  # type: ignore[union-attr]
-    _NLP_MODEL: str = _cfg.nlp_search.model  # type: ignore[union-attr]
-    log.info("NLP search enabled: model=%s host=%s", _NLP_MODEL, _NLP_HOST)
-
-# ---------------------------------------------------------------------------
 # Nearest-neighbour similarity index
 # ---------------------------------------------------------------------------
 from sklearn.impute import SimpleImputer  # noqa: E402
@@ -2405,82 +2394,6 @@ app.layout = html.Div(
                                                         ),
                                                     ],
                                                 ),
-                                                # ── NLP search (optional) ──────────────────
-                                                *(
-                                                    [
-                                                        html.Div(
-                                                            style=dict(
-                                                                borderBottom=BORDER,
-                                                                paddingBottom="12px",
-                                                                marginBottom="12px",
-                                                            ),
-                                                            children=[
-                                                                html.Label(
-                                                                    "Natural language search",
-                                                                    style=dict(
-                                                                        fontSize="12px",
-                                                                        color=ACCENT,
-                                                                        fontWeight="600",
-                                                                        display="block",
-                                                                        marginBottom="4px",
-                                                                    ),
-                                                                ),
-                                                                html.Span(
-                                                                    f"model: {_NLP_MODEL}  ·  {_NLP_HOST}",
-                                                                    style=dict(
-                                                                        fontSize="10px",
-                                                                        color="#666",
-                                                                        display="block",
-                                                                        marginBottom="8px",
-                                                                    ),
-                                                                ),
-                                                                dcc.Input(
-                                                                    id="nlp-search-input",
-                                                                    type="text",
-                                                                    placeholder='e.g. "high plasma current, q95 > 3"',
-                                                                    debounce=False,
-                                                                    style=dict(
-                                                                        backgroundColor="#16213e",
-                                                                        color=TEXT,
-                                                                        border=BORDER,
-                                                                        padding="4px 8px",
-                                                                        fontSize="11px",
-                                                                        width="100%",
-                                                                        borderRadius="4px",
-                                                                        outline="none",
-                                                                        marginBottom="8px",
-                                                                        boxSizing="border-box",
-                                                                    ),
-                                                                ),
-                                                                html.Button(
-                                                                    "Search",
-                                                                    id="nlp-search-btn",
-                                                                    n_clicks=0,
-                                                                    style=dict(
-                                                                        backgroundColor="#2a4a2a",
-                                                                        color="#aaffaa",
-                                                                        border="1px solid #3a6a3a",
-                                                                        padding="4px 12px",
-                                                                        cursor="pointer",
-                                                                        borderRadius="4px",
-                                                                        fontSize="11px",
-                                                                        fontWeight="600",
-                                                                    ),
-                                                                ),
-                                                                html.Div(
-                                                                    id="nlp-interpreted",
-                                                                    style=dict(
-                                                                        marginTop="6px",
-                                                                        fontSize="10px",
-                                                                        color="#888",
-                                                                    ),
-                                                                ),
-                                                            ],
-                                                        )
-                                                    ]
-                                                    if SHOW_NLP_SEARCH
-                                                    else []
-                                                ),
                                                 # ── Traces (above table) ──────────────────
                                                 html.Span(
                                                     id="search-traces-status",
@@ -3584,82 +3497,6 @@ def find_similar_shots(_n, selected_shot, query_shot_id, k, features):
     ]
     status = f"{len(result_ids)} shots similar to shot {query_id}"
     return result_ids, status, table_data
-
-
-if SHOW_NLP_SEARCH:
-
-    @app.callback(
-        Output("search-results", "data", allow_duplicate=True),
-        Output("search-status", "children", allow_duplicate=True),
-        Output("search-results-table", "data", allow_duplicate=True),
-        Output("nlp-interpreted", "children"),
-        Input("nlp-search-btn", "n_clicks"),
-        State("nlp-search-input", "value"),
-        prevent_initial_call=True,
-    )
-    def nlp_search(_n, query):
-        if not query or not str(query).strip():
-            return dash.no_update, "Enter a query first", dash.no_update, ""
-        try:
-            shot_ids, conditions, raw = _nlp_search(
-                query=str(query),
-                df=df,
-                columns=numeric_cols,
-                host=_NLP_HOST,
-                model=_NLP_MODEL,
-            )
-        except Exception as exc:
-            log.error("[NLP search] %s", exc)
-            return None, f"Error: {exc}", [], _nlp_output_panel(error=str(exc))
-
-        panel = _nlp_output_panel(raw=raw, conditions=conditions)
-
-        if not shot_ids:
-            return None, "No shots matched", [], panel
-
-        table_data = [{"shot_id": sid, "rank": i + 1, "score": ""} for i, sid in enumerate(shot_ids)]
-        return shot_ids, f"{len(shot_ids):,} shots matched", table_data, panel
-
-    def _nlp_output_panel(
-        raw: str = "",
-        conditions=None,
-        error: str = "",
-    ):
-        _label = dict(fontSize="10px", color="#666", marginBottom="2px", display="block")
-        _code = dict(
-            fontSize="10px",
-            color="#ccc",
-            backgroundColor="#0f0f23",
-            border="1px solid #2a2a4a",
-            borderRadius="3px",
-            padding="6px 8px",
-            overflowX="auto",
-            whiteSpace="pre-wrap",
-            wordBreak="break-all",
-            marginBottom="8px",
-        )
-        children: list = []
-
-        if error:
-            children.append(html.Span(error, style=dict(fontSize="11px", color="#ff6666")))
-            return html.Div(children, style=dict(marginTop="6px"))
-
-        if raw:
-            children += [
-                html.Span("Model response:", style=_label),
-                html.Pre(raw.strip(), style=_code),
-            ]
-
-        if conditions:
-            parts = "  AND  ".join(f"{c.column} {c.operator} {c.value}" for c in conditions)
-            children += [
-                html.Span("Interpreted as:", style=_label),
-                html.Pre(parts, style={**_code, "color": "#aaffaa"}),
-            ]
-        elif raw:
-            children.append(html.Span("No valid filter conditions found in response.", style=_label))
-
-        return html.Div(children, style=dict(marginTop="6px"))
 
 
 # ---------------------------------------------------------------------------
