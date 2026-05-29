@@ -2799,6 +2799,7 @@ if SHOW_TRACES:
     Output("cluster-labels", "data"),
     Output("cluster-status", "children"),
     Output("umap-color-col", "value"),
+    Output("pair-color-col", "value"),
     Input("run-cluster-btn", "n_clicks"),
     State("cluster-algorithm", "value"),
     State("cluster-features", "value"),
@@ -2809,7 +2810,7 @@ if SHOW_TRACES:
 )
 def run_clustering(n_clicks, algorithm, features, n_clusters, eps, min_samples):
     if not features:
-        return dash.no_update, "Select at least one feature", dash.no_update
+        return dash.no_update, "Select at least one feature", dash.no_update, dash.no_update
     try:
         labels = _run_clustering(
             algorithm=algorithm or "kmeans",
@@ -2820,16 +2821,16 @@ def run_clustering(n_clicks, algorithm, features, n_clusters, eps, min_samples):
         )
     except Exception as exc:
         log.error("[clustering] %s", exc)
-        return dash.no_update, f"Error: {exc}", dash.no_update
+        return dash.no_update, f"Error: {exc}", dash.no_update, dash.no_update
     if not labels:
-        return None, "No shots clustered — check features", dash.no_update
+        return None, "No shots clustered — check features", dash.no_update, dash.no_update
     unique = sorted(set(labels.values()))
     n_valid = sum(1 for v in unique if v >= 0)
     noise = sum(1 for v in labels.values() if v < 0)
     msg = f"{n_valid} cluster(s) across {len(labels):,} shots"
     if noise:
         msg += f" · {noise:,} noise"
-    return labels, msg, _CLUSTER_COLOR_VALUE
+    return labels, msg, _CLUSTER_COLOR_VALUE, _CLUSTER_COLOR_VALUE
 
 
 @app.callback(
@@ -2956,6 +2957,7 @@ def download_table(n_clicks, cluster_labels, cluster_names):
     Output("outlier-labels", "data"),
     Output("outlier-status", "children"),
     Output("umap-color-col", "value", allow_duplicate=True),
+    Output("pair-color-col", "value", allow_duplicate=True),
     Input("run-outlier-btn", "n_clicks"),
     State("outlier-algorithm", "value"),
     State("outlier-features", "value"),
@@ -2965,7 +2967,7 @@ def download_table(n_clicks, cluster_labels, cluster_names):
 )
 def run_outlier_detection(n_clicks, algorithm, features, contamination, n_neighbors):
     if not features:
-        return dash.no_update, "Select at least one feature", dash.no_update
+        return dash.no_update, "Select at least one feature", dash.no_update, dash.no_update
     try:
         labels = _run_outlier_detection(
             algorithm=algorithm or "isoforest",
@@ -2975,13 +2977,13 @@ def run_outlier_detection(n_clicks, algorithm, features, contamination, n_neighb
         )
     except Exception as exc:
         log.error("[outliers] %s", exc)
-        return dash.no_update, f"Error: {exc}", dash.no_update
+        return dash.no_update, f"Error: {exc}", dash.no_update, dash.no_update
     if not labels:
-        return None, "No shots processed — check features", dash.no_update
+        return None, "No shots processed — check features", dash.no_update, dash.no_update
     n_out = sum(v for v in labels.values())
     pct = 100 * n_out / len(labels)
     msg = f"{n_out:,} outliers ({pct:.1f}%) across {len(labels):,} shots"
-    return labels, msg, _OUTLIER_COLOR_VALUE
+    return labels, msg, _OUTLIER_COLOR_VALUE, _OUTLIER_COLOR_VALUE
 
 
 @app.callback(
