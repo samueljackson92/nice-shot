@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, model_validator
 
@@ -23,10 +23,12 @@ class UDAOptions(BaseModel):
 
 
 class AppConfig(BaseModel):
-    backend: Literal["parquet", "uda", "sal"] = "parquet"
+    backend: str = "parquet"
     signals: list[str] = ["ip", "ne", "dalpha", "loopv", "plasma_energy"]
     time_window: TimeWindow = TimeWindow()
     uda: UDAOptions = UDAOptions()
     projection_method: Literal["umap", "pca"] = "umap"
     umap_features: list[str] | None = None
     reference_shot_col: str | None = None
+    plugins: list[str] = []
+    backend_options: dict[str, Any] = {}

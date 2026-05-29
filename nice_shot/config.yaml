@@ -74,3 +74,18 @@ umap_features:
 #   # Interpolate all signals onto a uniform time grid at this sample rate (Hz).
 #   # If omitted, the native time axis of the first successfully loaded signal is used.
 #   timebase_hz: 1000
+
+# Custom backend plugins.
+# List importable Python module paths. Each module is imported at startup;
+# modules are expected to call register_trace_backend() or
+# register_shot_data_backend() as a side-effect.
+#
+# plugins:
+#   - my_package.my_backends
+
+# Extra key/value config forwarded to the active trace backend as
+# BackendConfig.options. Use this to pass custom settings to a plugin backend.
+#
+# backend_options:
+#   server: "localhost:8080"
+#   tree: "mast"

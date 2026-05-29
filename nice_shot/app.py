@@ -5,13 +5,13 @@ Run from project root: uv run python nice_shot/app.py
 
 import argparse
 import hashlib
+import importlib
 import logging
 import os
 import sys
 from pathlib import Path
 
 import dash
-import duckdb
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -19,6 +19,13 @@ import plotly.graph_objects as go
 import yaml
 from dash import ALL, Input, Output, State, dash_table, dcc, html
 from plotly.subplots import make_subplots
+
+from nice_shot.backends import (
+    BackendConfig,
+    create_shot_data_backend,
+    create_trace_backend,
+    detect_shot_col,
+)
 
 log = logging.getLogger(__name__)
 
@@ -131,14 +138,28 @@ PROJECTION_METHOD: str = _cfg.projection_method
 UMAP_FEATURES: list[str] | None = _cfg.umap_features
 REFERENCE_SHOT_COL: str | None = _cfg.reference_shot_col
 
-# Time-trace panel is shown only when a data source is actually configured.
-# UDA/SAL: always enabled (live connection defined in config).
-# parquet: enabled only when --data-dir exists and is non-empty.
-if BACKEND in ("uda", "sal"):
-    SHOW_TRACES = True
-else:
-    SHOW_TRACES = os.path.isdir(MASTU_DATA_DIR) and bool(os.listdir(MASTU_DATA_DIR))
+# ---------------------------------------------------------------------------
+# Backend initialisation
+# ---------------------------------------------------------------------------
 
+for _plugin in _cfg.plugins:
+    log.info("Loading plugin: %s", _plugin)
+    importlib.import_module(_plugin)
+
+_backend_config = BackendConfig(
+    shot_data_path=SHOT_DATA_PATH,
+    data_dir=MASTU_DATA_DIR,
+    signals=TIME_TRACE_SIGNALS,
+    min_time=MIN_TIME,
+    max_time=MAX_TIME,
+    timebase_hz=UDA_TIMEBASE_HZ,
+    options=_cfg.backend_options,
+)
+
+_shot_data_backend = create_shot_data_backend(SHOT_DATA_PATH, _backend_config)
+_trace_backend = create_trace_backend(BACKEND, _backend_config)
+
+SHOW_TRACES: bool = _trace_backend.is_available()
 if not SHOW_TRACES:
     log.info(
         "Time-trace panel greyed out — backend='%s', data-dir '%s' not found or empty.",
@@ -146,62 +167,7 @@ if not SHOW_TRACES:
         MASTU_DATA_DIR,
     )
 
-# ---------------------------------------------------------------------------
-# Data loading
-# ---------------------------------------------------------------------------
-
-_SHOT_ID_CANDIDATES = [
-    "shot_id",
-    "shot",
-    "pulse",
-    "number",
-    "exp_number",
-    "pulse_id",
-    "shot_number",
-]
-
-
-def _detect_shot_col(frame: pd.DataFrame) -> str:
-    for candidate in _SHOT_ID_CANDIDATES:
-        if candidate in frame.columns:
-            return candidate
-    raise ValueError(
-        f"Could not detect shot ID column. Expected one of {_SHOT_ID_CANDIDATES}. Found: {list(frame.columns)}"
-    )
-
-
-def _load_shot_data(path: str) -> pd.DataFrame:
-    log.info("Loading %s...", path)
-    _ext = os.path.splitext(path)[1].lower()
-    if _ext == ".csv":
-        _df = pd.read_csv(path)
-    elif _ext in (".parquet", ".pq"):
-        _df = pd.read_parquet(path)
-    else:
-        raise ValueError(f"Unsupported shot stats format '{_ext}' — expected .csv or .parquet")
-
-    # Coerce object columns to numeric where possible; leave non-numeric columns as-is.
-    _obj_cols = _df.select_dtypes(include="object").columns
-    if len(_obj_cols):
-        _coerced = _df[_obj_cols].apply(pd.to_numeric, errors="coerce")
-        _converted = [c for c in _obj_cols if _coerced[c].notna().any()]
-        if _converted:
-            log.info(
-                "Coerced %d object column(s) to numeric: %s",
-                len(_converted),
-                _converted,
-            )
-        _df[_obj_cols] = _coerced
-
-    _shot_col = _detect_shot_col(_df)
-    if _shot_col != "shot_id":
-        log.info("Renaming shot ID column '%s' -> 'shot_id'", _shot_col)
-        _df = _df.rename(columns={_shot_col: "shot_id"})
-
-    return _df
-
-
-df = _load_shot_data(SHOT_DATA_PATH)
+df = _shot_data_backend.load(SHOT_DATA_PATH)
 
 # Build positional index for SHAP lookup before the UMAP merge drops rows.
 # The .nc file uses 0-based indices matching the original sorted shot order.
@@ -384,7 +350,7 @@ def _load_projection_file(path: str) -> tuple[pd.DataFrame, str, str]:
     else:
         raise ValueError(f"Unsupported projection format '{ext}' — expected .npy, .csv, or .parquet")
 
-    shot_col = _detect_shot_col(emb)
+    shot_col = detect_shot_col(emb)
     if shot_col != "shot_id":
         emb = emb.rename(columns={shot_col: "shot_id"})
 
@@ -506,80 +472,8 @@ if SHAP_PATH is not None:
 # ---------------------------------------------------------------------------
 
 
-def find_shot_file(shot_id: int) -> str | None:
-    for subdir in sorted(os.listdir(MASTU_DATA_DIR)):
-        for ext in (".parquet", ".csv"):
-            path = os.path.join(MASTU_DATA_DIR, subdir, f"{int(shot_id)}{ext}")
-            if os.path.exists(path):
-                return path
-    return None
-
-
-def _load_local(shot_id: int) -> pd.DataFrame | None:
-    path = find_shot_file(shot_id)
-    if path is None:
-        return None
-    ext = os.path.splitext(path)[1].lower()
-    if ext == ".csv":
-        result = pd.read_csv(path)
-        return result[(result["time"] >= MIN_TIME) & (result["time"] <= MAX_TIME)].reset_index(drop=True)
-    con = duckdb.connect()
-    result = con.execute(f"SELECT * FROM '{path}' WHERE time >= {MIN_TIME} AND time <= {MAX_TIME}").df()
-    con.close()
-    return result
-
-
-def _load_remote(shot_id: int, url_fn) -> pd.DataFrame | None:
-    """Shared loader for UDA and SAL backends. url_fn(signal, shot_id) -> URL string."""
-    import xarray as xr
-
-    engine = "uda" if BACKEND == "uda" else "sal"
-
-    if UDA_TIMEBASE_HZ is not None:
-        n = int(round((MAX_TIME - MIN_TIME) * UDA_TIMEBASE_HZ))
-        time_ref: np.ndarray | None = np.linspace(MIN_TIME, MAX_TIME, n)
-    else:
-        time_ref = None
-
-    signal_data: dict[str, np.ndarray] = {}
-
-    for signal in TIME_TRACE_SIGNALS:
-        try:
-            ds = xr.open_dataset(url_fn(signal, shot_id), engine=engine)
-            if time_ref is None:
-                time_ref = ds.coords["time"].values.astype(float)
-            values = ds["data"].interp(time=time_ref).values
-            signal_data[signal] = values
-        except Exception as exc:
-            log.error(
-                "[%s] Could not load '%s' for shot %d: %s",
-                engine.upper(),
-                signal,
-                shot_id,
-                exc,
-            )
-
-    if time_ref is None:
-        return None
-
-    result = pd.DataFrame({"time": time_ref, **signal_data})
-    return result[(result["time"] >= MIN_TIME) & (result["time"] <= MAX_TIME)].reset_index(drop=True)
-
-
-def _load_uda(shot_id: int) -> pd.DataFrame | None:
-    return _load_remote(shot_id, lambda signal, shot: f"uda://{signal}:{shot}")
-
-
-def _load_sal(shot_id: int) -> pd.DataFrame | None:
-    return _load_remote(shot_id, lambda signal, shot: f"sal://pulse/{shot}/{signal}")
-
-
 def load_shot_traces(shot_id: int) -> pd.DataFrame | None:
-    if BACKEND == "uda":
-        return _load_uda(shot_id)
-    if BACKEND == "sal":
-        return _load_sal(shot_id)
-    return _load_local(shot_id)
+    return _trace_backend.load(shot_id)
 
 
 def empty_traces_fig(message: str = "Click a point to load shot traces") -> go.Figure:

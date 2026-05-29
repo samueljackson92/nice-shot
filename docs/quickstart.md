@@ -159,6 +159,74 @@ A **SHAP** tab appears in the left panel. Click any point to see its decision pl
 
 ---
 
+## Custom backends
+
+NiceShot! uses a registry/factory system so you can add support for new data sources without modifying the app code. Two extension points are available:
+
+- **`TraceBackend`** — how per-shot time-series are loaded (new instrument backends, custom file formats, remote APIs, etc.)
+- **`ShotDataBackend`** — how the shot-statistics table is loaded (new file formats such as HDF5, Zarr, databases, etc.)
+
+### Writing a custom trace backend
+
+```python
+# my_package/my_backends.py
+import pandas as pd
+from nice_shot.backends import BackendConfig, TraceBackend, register_trace_backend
+
+class MdsTraceBackend(TraceBackend):
+    def __init__(self, config: BackendConfig) -> None:
+        super().__init__(config)
+        self._server = config.options.get("server", "localhost")
+
+    def load(self, shot_id: int) -> pd.DataFrame | None:
+        # fetch data for shot_id and return a DataFrame with a
+        # 'time' column and one column per signal, or None
+        ...
+
+    def is_available(self) -> bool:
+        return True  # or check connectivity
+
+register_trace_backend("mds", MdsTraceBackend)
+```
+
+Then in `config.yaml`:
+
+```yaml
+backend: mds
+
+plugins:
+  - my_package.my_backends
+
+backend_options:
+  server: "mds.mylab.ac.uk"
+```
+
+### Writing a custom shot data backend
+
+```python
+# my_package/my_backends.py
+import pandas as pd
+from nice_shot.backends import BackendConfig, ShotDataBackend, register_shot_data_backend
+
+class HDF5ShotDataBackend(ShotDataBackend):
+    def load(self, path: str) -> pd.DataFrame:
+        import h5py
+        # load from HDF5 and return a normalised DataFrame
+        # (must have a 'shot_id' column — call self._prepare(df) to auto-detect)
+        ...
+
+register_shot_data_backend(".h5", HDF5ShotDataBackend)
+register_shot_data_backend(".hdf5", HDF5ShotDataBackend)
+```
+
+The backend is selected automatically from the file extension of `--shot-data`.
+
+### Plugin loading order
+
+Plugins listed under `plugins:` are imported in order before the backends are instantiated, so all `register_*` calls take effect in time.
+
+---
+
 ## CLI reference
 
 | Flag | Default | Description |
