@@ -2294,6 +2294,62 @@ app.layout = html.Div(
                                         ),
                                     ],
                                 ),
+                                # -- Correlation tab --
+                                dcc.Tab(
+                                    label="Correlation",
+                                    value="correlation",
+                                    style=dict(color=TEXT, backgroundColor=PANEL_BG),
+                                    selected_style=dict(
+                                        color=ACCENT,
+                                        backgroundColor=DARK_BG,
+                                        borderTop=f"2px solid {ACCENT}",
+                                    ),
+                                    children=[
+                                        html.Div(
+                                            style=dict(
+                                                padding="8px 4px 12px",
+                                                display="flex",
+                                                alignItems="flex-end",
+                                                gap="16px",
+                                            ),
+                                            children=[
+                                                html.Div(
+                                                    style=dict(flex="1"),
+                                                    children=[
+                                                        html.Label(
+                                                            "Features",
+                                                            style=dict(
+                                                                fontSize="12px",
+                                                                display="block",
+                                                                marginBottom="4px",
+                                                            ),
+                                                        ),
+                                                        dcc.Dropdown(
+                                                            id="corr-features",
+                                                            options=[
+                                                                {"label": c, "value": c}
+                                                                for c in numeric_cols
+                                                            ],
+                                                            value=(UMAP_FEATURES or numeric_cols),
+                                                            multi=True,
+                                                            placeholder="Select feature columns...",
+                                                            style=dict(
+                                                                backgroundColor="#16213e",
+                                                                color="#000",
+                                                                fontSize="12px",
+                                                            ),
+                                                        ),
+                                                    ],
+                                                ),
+                                            ],
+                                        ),
+                                        dcc.Graph(
+                                            id="corr-plot",
+                                            config=dict(displayModeBar=True, displaylogo=False),
+                                            style=dict(height=_SCATTER_H),
+                                        ),
+                                    ],
+                                ),
                             ],
                         ),
                     ],
@@ -3041,6 +3097,61 @@ def render_outlier_traces(outlier_traces_data):
     fig = _render_outlier_traces_fig(outlier_traces_data)
     n = len(outlier_traces_data)
     return fig, f"Showing {n} outlier sample(s)"
+
+
+# ---------------------------------------------------------------------------
+# Correlation callback
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("corr-plot", "figure"),
+    Input("corr-features", "value"),
+    Input("active-filters", "data"),
+)
+def update_correlation(features, active_filters):
+    if not features or len(features) < 2:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="Select at least 2 features",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(size=14, color="#aaa"),
+        )
+        fig.update_layout(paper_bgcolor=DARK_BG, plot_bgcolor="#16213e", margin=dict(l=50, r=30, t=40, b=50))
+        return fig
+
+    plot_df = _apply_filter_mask(active_filters)
+    valid = [f for f in features if f in plot_df.columns]
+    corr = plot_df[valid].corr()
+
+    fig = px.imshow(
+        corr,
+        color_continuous_scale="RdBu_r",
+        zmin=-1,
+        zmax=1,
+        text_auto=".2f",
+        aspect="auto",
+    )
+    fig.update_traces(textfont=dict(size=10))
+    fig.update_layout(
+        paper_bgcolor=DARK_BG,
+        plot_bgcolor="#16213e",
+        font=dict(color=TEXT, size=11),
+        margin=dict(l=120, r=20, t=40, b=120),
+        autosize=True,
+        coloraxis_colorbar=dict(
+            title="r",
+            tickvals=[-1, -0.5, 0, 0.5, 1],
+            ticktext=["-1", "-0.5", "0", "0.5", "1"],
+            bgcolor=PANEL_BG,
+            bordercolor="#2a2a4a",
+            tickfont=dict(color=TEXT),
+            titlefont=dict(color=TEXT),
+        ),
+        xaxis=dict(tickangle=-45, tickfont=dict(size=10), gridcolor="#2a2a4a"),
+        yaxis=dict(tickfont=dict(size=10), gridcolor="#2a2a4a"),
+    )
+    return fig
 
 
 # ---------------------------------------------------------------------------
