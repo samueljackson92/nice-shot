@@ -106,6 +106,37 @@ The **Data Table** tab has a **Download CSV** button. When clustering has been r
 
 ---
 
+## Detecting outliers
+
+The **Outlier Detection** tab (lower-left panel, next to Clustering) flags anomalous shots using scikit-learn anomaly detectors.
+
+### Workflow
+
+1. **Choose an algorithm** — Isolation Forest or Local Outlier Factor.
+2. **Select feature columns** — defaults to the projection features.
+3. **Set parameters**:
+   - `contamination` — expected proportion of outliers (0.01–0.5, both algorithms).
+   - `n_neighbors` — neighbourhood size for Local Outlier Factor only.
+4. **Click "Run outlier detection"** — both scatter plots switch to an Outlier/Inlier colour scheme (red = outlier, blue = inlier).
+
+### Outlier sample traces
+
+The **Outlier Traces** tab (upper-left, next to Cluster Traces) automatically loads time traces for up to 5 outlier shots after each run, overlaid as individual coloured lines labelled by shot ID.
+
+> Requires `--data-dir` or a UDA/SAL backend. Shows a placeholder if no time-trace backend is configured.
+
+---
+
+## Correlation heatmap
+
+The **Correlation** tab (right panel, next to Data Table) shows a Pearson correlation matrix for any set of numeric columns.
+
+- **Feature selector** — defaults to the same columns used for the projection (`umap_features`). Change the selection to explore different subsets.
+- The heatmap updates whenever the feature selection or active filters change, so it always reflects the currently visible shots.
+- Colour scale runs from −1 (dark red) through 0 (white) to +1 (dark blue). Each cell is annotated with the `r` value.
+
+---
+
 ## With SHAP values
 
 ```sh

@@ -11,12 +11,14 @@ An interactive dashboard for exploring tokamak plasma shot data. Point it at a s
 
 - **Projection** — UMAP or PCA scatter of every shot, coloured by any column. Backed by a content-hash cache so reloads are instant.
 - **Pairwise scatter** — any two numeric columns plotted against each other, with linear/log axis toggles.
-- **Data table** — sortable, virtualized table with shot-ID search and cross-highlight with the scatter plots.
+- **Correlation** — interactive Pearson correlation heatmap for any selection of numeric columns.
+- **Data table** — sortable, virtualized table with shot-ID search, cross-highlight with scatter plots, and CSV export.
 - **Time traces** — per-shot signal plots loaded on click. Supports local parquet/CSV files, live UDA, and live SAL backends.
 - **Filters** — up to 6 simultaneous column filters combinable with AND / OR logic. All plots update live.
-- **Clustering** — run K-Means, DBSCAN, or Agglomerative clustering on any set of numeric columns. Clusters are shown as colours on the scatter plots and can be given human-readable class names.
-- **Cluster centroid traces** — average time-series traces per cluster, computed automatically after clustering and updated live when class names change.
-- **CSV export** — download the full data table with `cluster_id` and `cluster_name` columns appended.
+- **Clustering** — run K-Means, DBSCAN, or Agglomerative clustering on any set of numeric columns. Results colour the scatter plots immediately; clusters can be given human-readable class names.
+- **Cluster centroid traces** — mean time-series per cluster, computed automatically after clustering and relabelled live as class names change.
+- **Outlier detection** — flag anomalous shots with Isolation Forest or Local Outlier Factor. Outliers are highlighted in red on the scatter plots and sample traces are loaded automatically.
+- **CSV export** — download the full data table with `cluster_id`, `cluster_name` columns appended when clustering has been run.
 - **SHAP decision plots** — per-shot feature attribution rendered inline (optional, requires `--shap-data`).
 - **Reference graph** — overlay the full reference-shot lineage on any scatter plot (optional, requires `reference_shot_col` in config).
 
