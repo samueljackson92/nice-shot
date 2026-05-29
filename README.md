@@ -14,6 +14,9 @@ An interactive dashboard for exploring tokamak plasma shot data. Point it at a s
 - **Data table** — sortable, virtualized table with shot-ID search and cross-highlight with the scatter plots.
 - **Time traces** — per-shot signal plots loaded on click. Supports local parquet/CSV files, live UDA, and live SAL backends.
 - **Filters** — up to 6 simultaneous column filters combinable with AND / OR logic. All plots update live.
+- **Clustering** — run K-Means, DBSCAN, or Agglomerative clustering on any set of numeric columns. Clusters are shown as colours on the scatter plots and can be given human-readable class names.
+- **Cluster centroid traces** — average time-series traces per cluster, computed automatically after clustering and updated live when class names change.
+- **CSV export** — download the full data table with `cluster_id` and `cluster_name` columns appended.
 - **SHAP decision plots** — per-shot feature attribution rendered inline (optional, requires `--shap-data`).
 - **Reference graph** — overlay the full reference-shot lineage on any scatter plot (optional, requires `reference_shot_col` in config).
 

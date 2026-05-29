@@ -79,6 +79,37 @@ See [Data Formats](data-formats.md) for accepted shapes.
 
 ---
 
+## Clustering shots
+
+The **Clustering** tab (lower-left panel) lets you group shots by their statistics without any pre-processing.
+
+### Workflow
+
+1. **Choose an algorithm** — K-Means, DBSCAN, or Agglomerative.
+2. **Select feature columns** — defaults to the same columns used for the projection. Pick any subset of numeric columns from the shot statistics file.
+3. **Set parameters**:
+   - `n_clusters` — number of clusters (K-Means / Agglomerative).
+   - `eps` / `min_samples` — neighbourhood radius and density threshold (DBSCAN).
+4. **Click "Run clustering"** — the Projection scatter switches to cluster colours automatically.
+5. **Label your clusters** — type a class name next to each cluster; the scatter legend and centroid traces update immediately.
+
+### Cluster centroid traces
+
+After clustering the **Cluster Traces** tab (upper-left) shows the mean time-series for every shot in each cluster, with one coloured line per cluster. The traces are computed automatically on each run and re-labelled live as you edit class names. The button "Compute centroid traces" can be used to re-trigger computation manually if needed.
+
+> Centroid traces require `--data-dir` (parquet backend) or a UDA/SAL backend. The tab is still visible without traces configured but will show a placeholder.
+
+### Exporting with cluster labels
+
+The **Data Table** tab has a **Download CSV** button. When clustering has been run the exported file includes two extra columns:
+
+| Column | Description |
+|--------|-------------|
+| `cluster_id` | Integer cluster index (`-1` = DBSCAN noise) |
+| `cluster_name` | Human-readable label entered in the Clustering tab, or `Cluster N` if not set |
+
+---
+
 ## With SHAP values
 
 ```sh
