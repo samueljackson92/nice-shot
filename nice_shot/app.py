@@ -2498,7 +2498,7 @@ app.layout = html.Div(
                                                             displayModeBar=True,
                                                             displaylogo=False,
                                                         ),
-                                                        style=dict(height="420px"),
+                                                        style=dict(height="600px"),
                                                     ),
                                                 ),
                                                 # ── Results table ─────────────────────────
@@ -3523,7 +3523,6 @@ def update_correlation(features, active_filters):
     Output("search-query-shot", "value"),
     Input("search-use-selected-btn", "n_clicks"),
     Input("selected-shot", "data"),
-    prevent_initial_call=True,
 )
 def populate_search_from_selection(_n, selected_shot):
     return selected_shot
@@ -3538,14 +3537,13 @@ def populate_search_from_selection(_n, selected_shot):
     State("search-query-shot", "value"),
     State("search-k", "value"),
     State("search-features", "value"),
-    prevent_initial_call=True,
 )
 def find_similar_shots(_n, selected_shot, query_shot_id, k, features):
     # When triggered by shot selection, use that shot; otherwise use typed input
     if dash.ctx.triggered_id == "selected-shot":
         query_shot_id = selected_shot
     if query_shot_id is None:
-        return dash.no_update, "Select a shot or enter an ID", dash.no_update
+        return None, "", []
 
     query_id = int(query_shot_id)
     k = int(k or 10)
