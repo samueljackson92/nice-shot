@@ -69,3 +69,10 @@ umap_features:
   - tautot_max
 
 reference_shot_col: reference__number
+
+# NLP-based semantic search via a local Ollama server.
+# Start the server with: ollama serve
+# Pull a model first:    ollama pull llama3.2
+nlp_search:
+  host: "http://localhost:11434"
+  model: "llama3.2"
