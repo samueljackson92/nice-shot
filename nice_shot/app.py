@@ -846,6 +846,28 @@ def _compute_outlier_traces_data(outlier_labels: dict, n_samples: int = 5) -> di
     return result or None
 
 
+def _load_shots_traces(shot_ids: list[int], n_samples: int = 10) -> dict | None:
+    """Load time traces for up to n_samples shots from a plain list of shot IDs.
+    Returns {str(shot_id): {col: [values]}} or None.
+    """
+    if not shot_ids or not SHOW_TRACES:
+        return None
+    result: dict[str, dict] = {}
+    for sid in shot_ids[:n_samples]:
+        try:
+            sdf = load_shot_traces(sid)
+            if sdf is None or sdf.empty:
+                continue
+            entry: dict[str, list] = {"time": sdf["time"].tolist()}
+            for sig in TIME_TRACE_SIGNALS:
+                if sig in sdf.columns:
+                    entry[sig] = sdf[sig].tolist()
+            result[str(sid)] = entry
+        except Exception:
+            pass
+    return result or None
+
+
 def _render_outlier_traces_fig(outlier_traces_data: dict) -> go.Figure:
     """Overlay individual outlier shot traces in a subplot figure (no I/O)."""
     available = [s for s in TIME_TRACE_SIGNALS if any(s in td for td in outlier_traces_data.values())]
@@ -1077,6 +1099,7 @@ app.layout = html.Div(
         dcc.Store(id="outlier-labels", data=None),
         dcc.Store(id="outlier-traces-data", data=None),
         dcc.Store(id="search-results", data=None),
+        dcc.Store(id="search-traces-data", data=None),
         dcc.Download(id="table-download"),
         # Header
         html.Div(
@@ -2474,6 +2497,39 @@ app.layout = html.Div(
                                                         border="1px solid #2a2a4a",
                                                     ),
                                                 ),
+                                                # Nearest-neighbour traces
+                                                html.Hr(
+                                                    style=dict(
+                                                        borderColor="#2a2a4a",
+                                                        margin="10px 0",
+                                                    )
+                                                ),
+                                                html.Span(
+                                                    id="search-traces-status",
+                                                    style=dict(
+                                                        fontSize="11px",
+                                                        color="#888",
+                                                        display="block",
+                                                        marginBottom="4px",
+                                                    ),
+                                                ),
+                                                dcc.Loading(
+                                                    type="circle",
+                                                    color=ACCENT,
+                                                    children=dcc.Graph(
+                                                        id="search-traces-plot",
+                                                        figure=empty_traces_fig("Select a shot to load similar traces"),
+                                                        responsive=True,
+                                                        config=dict(
+                                                            displayModeBar=True,
+                                                            displaylogo=False,
+                                                        ),
+                                                        style=dict(
+                                                            minHeight="300px",
+                                                            height="calc(100vh - 640px)",
+                                                        ),
+                                                    ),
+                                                ),
                                             ],
                                         ),
                                     ],
@@ -3407,7 +3463,7 @@ def update_correlation(features, active_filters):
 @app.callback(
     Output("search-query-shot", "value"),
     Input("search-use-selected-btn", "n_clicks"),
-    State("selected-shot", "data"),
+    Input("selected-shot", "data"),
     prevent_initial_call=True,
 )
 def populate_search_from_selection(_n, selected_shot):
@@ -3419,14 +3475,18 @@ def populate_search_from_selection(_n, selected_shot):
     Output("search-status", "children"),
     Output("search-results-table", "data"),
     Input("find-similar-btn", "n_clicks"),
+    Input("selected-shot", "data"),
     State("search-query-shot", "value"),
     State("search-k", "value"),
     State("search-features", "value"),
     prevent_initial_call=True,
 )
-def find_similar_shots(_n, query_shot_id, k, features):
+def find_similar_shots(_n, selected_shot, query_shot_id, k, features):
+    # When triggered by shot selection, use that shot; otherwise use typed input
+    if dash.ctx.triggered_id == "selected-shot":
+        query_shot_id = selected_shot
     if query_shot_id is None:
-        return dash.no_update, "Enter a shot ID first", dash.no_update
+        return dash.no_update, "Select a shot or enter an ID", dash.no_update
 
     query_id = int(query_shot_id)
     k = int(k or 10)
@@ -3502,6 +3562,37 @@ if SHOW_NLP_SEARCH:
             return "No filter conditions generated"
         parts = [f"{c.column} {c.operator} {c.value}" for c in conditions]
         return "Interpreted as: " + "  AND  ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Search traces callbacks
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("search-traces-data", "data"),
+    Input("search-results", "data"),
+    prevent_initial_call=True,
+)
+def compute_search_traces(search_results):
+    return _load_shots_traces(search_results or [])
+
+
+@app.callback(
+    Output("search-traces-plot", "figure"),
+    Output("search-traces-status", "children"),
+    Input("search-traces-data", "data"),
+)
+def render_search_traces(search_traces_data):
+    if not search_traces_data:
+        if not SHOW_TRACES:
+            return (
+                empty_traces_fig("No data directory — pass --data-dir to enable time traces"),
+                "",
+            )
+        return empty_traces_fig("Select a shot to load similar traces"), ""
+    fig = _render_outlier_traces_fig(search_traces_data)
+    return fig, f"Traces for {len(search_traces_data)} similar shot(s)"
 
 
 # ---------------------------------------------------------------------------
