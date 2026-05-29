@@ -1588,8 +1588,21 @@ app.layout = html.Div(
                                                                 ),
                                                             ],
                                                         ),
-                                                        # Row 2: feature selection
+                                                        # Row 2: projection toggle + feature selection
                                                         html.Div(
+                                                            style=dict(marginBottom="4px"),
+                                                            children=[
+                                                                dcc.Checklist(
+                                                                    id="cluster-use-projection",
+                                                                    options=[{"label": " Use projection coordinates", "value": "projection"}],
+                                                                    value=[],
+                                                                    inputStyle=dict(marginRight="4px"),
+                                                                    labelStyle=dict(fontSize="11px", color=TEXT, cursor="pointer"),
+                                                                ),
+                                                            ],
+                                                        ),
+                                                        html.Div(
+                                                            id="cluster-features-row",
                                                             style=dict(marginBottom="6px"),
                                                             children=[
                                                                 html.Label(
@@ -1723,6 +1736,19 @@ app.layout = html.Div(
                                                             ],
                                                         ),
                                                         html.Div(
+                                                            style=dict(marginBottom="4px"),
+                                                            children=[
+                                                                dcc.Checklist(
+                                                                    id="outlier-use-projection",
+                                                                    options=[{"label": " Use projection coordinates", "value": "projection"}],
+                                                                    value=[],
+                                                                    inputStyle=dict(marginRight="4px"),
+                                                                    labelStyle=dict(fontSize="11px", color=TEXT, cursor="pointer"),
+                                                                ),
+                                                            ],
+                                                        ),
+                                                        html.Div(
+                                                            id="outlier-features-row",
                                                             style=dict(marginBottom="6px"),
                                                             children=[
                                                                 html.Label(
@@ -3147,10 +3173,12 @@ if SHOW_TRACES:
     State("cluster-n", "value"),
     State("cluster-eps", "value"),
     State("cluster-min-samples", "value"),
+    State("cluster-use-projection", "value"),
     prevent_initial_call=True,
 )
-def run_clustering(n_clicks, algorithm, features, n_clusters, eps, min_samples):
-    if not features:
+def run_clustering(n_clicks, algorithm, features, n_clusters, eps, min_samples, use_projection):
+    active_features = ["umap_x", "umap_y"] if use_projection else list(features or [])
+    if not active_features:
         return dash.no_update, "Select at least one feature", dash.no_update, dash.no_update
     eps_val = float(eps or 0.5)
     if eps_val <= 0:
@@ -3158,7 +3186,7 @@ def run_clustering(n_clicks, algorithm, features, n_clusters, eps, min_samples):
     try:
         labels = _run_clustering(
             algorithm=algorithm or "kmeans",
-            features=list(features),
+            features=active_features,
             n_clusters=int(n_clusters or 5),
             eps=eps_val,
             min_samples=int(min_samples or 5),
@@ -3317,6 +3345,22 @@ def toggle_outlier_params(algorithm):
     return _SHOW if algorithm == "lof" else _HIDE
 
 
+@app.callback(
+    Output("cluster-features-row", "style"),
+    Input("cluster-use-projection", "value"),
+)
+def toggle_cluster_features_row(use_proj):
+    return _HIDE if use_proj else dict(marginBottom="6px")
+
+
+@app.callback(
+    Output("outlier-features-row", "style"),
+    Input("outlier-use-projection", "value"),
+)
+def toggle_outlier_features_row(use_proj):
+    return _HIDE if use_proj else dict(marginBottom="6px")
+
+
 # ---------------------------------------------------------------------------
 # Outlier detection callbacks
 # ---------------------------------------------------------------------------
@@ -3332,15 +3376,17 @@ def toggle_outlier_params(algorithm):
     State("outlier-features", "value"),
     State("outlier-contamination", "value"),
     State("outlier-n-neighbors", "value"),
+    State("outlier-use-projection", "value"),
     prevent_initial_call=True,
 )
-def run_outlier_detection(n_clicks, algorithm, features, contamination, n_neighbors):
-    if not features:
+def run_outlier_detection(n_clicks, algorithm, features, contamination, n_neighbors, use_projection):
+    active_features = ["umap_x", "umap_y"] if use_projection else list(features or [])
+    if not active_features:
         return dash.no_update, "Select at least one feature", dash.no_update, dash.no_update
     try:
         labels = _run_outlier_detection(
             algorithm=algorithm or "isoforest",
-            features=list(features),
+            features=active_features,
             contamination=float(contamination or 0.1),
             n_neighbors=int(n_neighbors or 20),
         )
