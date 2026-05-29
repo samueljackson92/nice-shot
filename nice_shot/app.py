@@ -1100,6 +1100,7 @@ app.layout = html.Div(
         dcc.Store(id="outlier-traces-data", data=None),
         dcc.Store(id="search-results", data=None),
         dcc.Store(id="search-traces-data", data=None),
+        dcc.Store(id="search-highlight-enabled", data=True),
         dcc.Download(id="table-download"),
         # Header
         html.Div(
@@ -1164,26 +1165,45 @@ app.layout = html.Div(
                                 html.Span(f"signals: {', '.join(TIME_TRACE_SIGNALS)}"),
                             ],
                         ),
-                        *(
-                            [
+                        html.Div(
+                            style=dict(display="flex", gap="8px", flexWrap="wrap"),
+                            children=[
+                                *(
+                                    [
+                                        html.Button(
+                                            "Reference graph: OFF",
+                                            id="ref-toggle-btn",
+                                            n_clicks=0,
+                                            style=dict(
+                                                backgroundColor="#2a2a4a",
+                                                color="#888",
+                                                border="1px solid #3a3a6a",
+                                                padding="4px 12px",
+                                                cursor="pointer",
+                                                borderRadius="4px",
+                                                fontSize="11px",
+                                            ),
+                                        )
+                                    ]
+                                    if SHOW_REF_TOGGLE
+                                    else []
+                                ),
                                 html.Button(
-                                    "Reference graph: OFF",
-                                    id="ref-toggle-btn",
+                                    "Similar shots: ON",
+                                    id="search-highlight-btn",
                                     n_clicks=0,
                                     style=dict(
-                                        alignSelf="flex-start",
-                                        backgroundColor="#2a2a4a",
-                                        color="#888",
-                                        border="1px solid #3a3a6a",
+                                        backgroundColor="#1a3a6a",
+                                        color=ACCENT,
+                                        border=f"1px solid {ACCENT}",
                                         padding="4px 12px",
                                         cursor="pointer",
                                         borderRadius="4px",
                                         fontSize="11px",
+                                        fontWeight="600",
                                     ),
-                                )
-                            ]
-                            if SHOW_REF_TOGGLE
-                            else []
+                                ),
+                            ],
                         ),
                         dcc.Tabs(
                             id="left-upper-tabs",
@@ -2252,7 +2272,7 @@ app.layout = html.Div(
                                     children=[
                                         html.Div(
                                             style=dict(
-                                                padding="8px 4px",
+                                                padding="8px 4px 24px",
                                                 overflowY="auto",
                                                 height=_SCATTER_H,
                                             ),
@@ -2457,7 +2477,37 @@ app.layout = html.Div(
                                                     if SHOW_NLP_SEARCH
                                                     else []
                                                 ),
-                                                # ── Results ───────────────────────────────
+                                                # ── Traces (above table) ──────────────────
+                                                html.Span(
+                                                    id="search-traces-status",
+                                                    style=dict(
+                                                        fontSize="11px",
+                                                        color="#888",
+                                                        display="block",
+                                                        marginBottom="4px",
+                                                    ),
+                                                ),
+                                                dcc.Loading(
+                                                    type="circle",
+                                                    color=ACCENT,
+                                                    children=dcc.Graph(
+                                                        id="search-traces-plot",
+                                                        figure=empty_traces_fig("Select a shot to load similar traces"),
+                                                        responsive=True,
+                                                        config=dict(
+                                                            displayModeBar=True,
+                                                            displaylogo=False,
+                                                        ),
+                                                        style=dict(height="420px"),
+                                                    ),
+                                                ),
+                                                # ── Results table ─────────────────────────
+                                                html.Hr(
+                                                    style=dict(
+                                                        borderColor="#2a2a4a",
+                                                        margin="10px 0",
+                                                    )
+                                                ),
                                                 html.Span(
                                                     id="search-status",
                                                     style=dict(
@@ -2495,39 +2545,6 @@ app.layout = html.Div(
                                                         fontWeight="600",
                                                         fontSize="11px",
                                                         border="1px solid #2a2a4a",
-                                                    ),
-                                                ),
-                                                # Nearest-neighbour traces
-                                                html.Hr(
-                                                    style=dict(
-                                                        borderColor="#2a2a4a",
-                                                        margin="10px 0",
-                                                    )
-                                                ),
-                                                html.Span(
-                                                    id="search-traces-status",
-                                                    style=dict(
-                                                        fontSize="11px",
-                                                        color="#888",
-                                                        display="block",
-                                                        marginBottom="4px",
-                                                    ),
-                                                ),
-                                                dcc.Loading(
-                                                    type="circle",
-                                                    color=ACCENT,
-                                                    children=dcc.Graph(
-                                                        id="search-traces-plot",
-                                                        figure=empty_traces_fig("Select a shot to load similar traces"),
-                                                        responsive=True,
-                                                        config=dict(
-                                                            displayModeBar=True,
-                                                            displaylogo=False,
-                                                        ),
-                                                        style=dict(
-                                                            minHeight="300px",
-                                                            height="calc(100vh - 640px)",
-                                                        ),
                                                     ),
                                                 ),
                                             ],
@@ -2795,6 +2812,42 @@ if SHOW_REF_TOGGLE:
 
 
 @app.callback(
+    Output("search-highlight-enabled", "data"),
+    Output("search-highlight-btn", "children"),
+    Output("search-highlight-btn", "style"),
+    Input("search-highlight-btn", "n_clicks"),
+    State("search-highlight-enabled", "data"),
+    prevent_initial_call=True,
+)
+def toggle_search_highlight(n_clicks, currently_enabled):
+    enabled = not currently_enabled
+    if enabled:
+        label = "Similar shots: ON"
+        style = dict(
+            backgroundColor="#1a3a6a",
+            color=ACCENT,
+            border=f"1px solid {ACCENT}",
+            padding="4px 12px",
+            cursor="pointer",
+            borderRadius="4px",
+            fontSize="11px",
+            fontWeight="600",
+        )
+    else:
+        label = "Similar shots: OFF"
+        style = dict(
+            backgroundColor="#2a2a4a",
+            color="#888",
+            border="1px solid #3a3a6a",
+            padding="4px 12px",
+            cursor="pointer",
+            borderRadius="4px",
+            fontSize="11px",
+        )
+    return enabled, label, style
+
+
+@app.callback(
     Output("umap-plot", "figure"),
     Input("umap-color-col", "value"),
     Input("active-filters", "data"),
@@ -2804,6 +2857,7 @@ if SHOW_REF_TOGGLE:
     Input("cluster-names", "data"),
     Input("outlier-labels", "data"),
     Input("search-results", "data"),
+    Input("search-highlight-enabled", "data"),
 )
 def update_umap(
     color_col,
@@ -2814,6 +2868,7 @@ def update_umap(
     cluster_names,
     outlier_labels,
     search_results,
+    search_highlight_enabled,
 ) -> go.Figure:
     plot_df = _apply_filter_mask(active_filters)
     kwargs: dict = dict(
@@ -2847,7 +2902,8 @@ def update_umap(
     fig.update_layout(**_SCATTER_LAYOUT, uirevision="umap")
     if ref_graph_enabled and selected_shot is not None:
         _add_reference_graph_overlay(fig, plot_df, "umap_x", "umap_y", selected_shot)
-    _add_search_highlight(fig, plot_df, "umap_x", "umap_y", search_results)
+    if search_highlight_enabled:
+        _add_search_highlight(fig, plot_df, "umap_x", "umap_y", search_results)
     _add_selection_highlight(fig, plot_df, "umap_x", "umap_y", selected_shot)
     return fig
 
@@ -2866,6 +2922,7 @@ def update_umap(
     Input("cluster-names", "data"),
     Input("outlier-labels", "data"),
     Input("search-results", "data"),
+    Input("search-highlight-enabled", "data"),
 )
 def update_pair_plot(
     x_col,
@@ -2880,6 +2937,7 @@ def update_pair_plot(
     cluster_names,
     outlier_labels,
     search_results,
+    search_highlight_enabled,
 ) -> go.Figure:
     if not x_col or not y_col:
         return go.Figure()
@@ -2920,7 +2978,8 @@ def update_pair_plot(
     )
     if ref_graph_enabled and selected_shot is not None:
         _add_reference_graph_overlay(fig, plot_df, x_col, y_col, selected_shot)
-    _add_search_highlight(fig, plot_df, x_col, y_col, search_results)
+    if search_highlight_enabled:
+        _add_search_highlight(fig, plot_df, x_col, y_col, search_results)
     _add_selection_highlight(fig, plot_df, x_col, y_col, selected_shot)
     return fig
 
