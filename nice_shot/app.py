@@ -136,6 +136,7 @@ MAX_TIME: float = _cfg.time_window.max_time
 UDA_TIMEBASE_HZ: float | None = _cfg.uda.timebase_hz
 PROJECTION_METHOD: str = _cfg.projection_method
 UMAP_FEATURES: list[str] | None = _cfg.umap_features
+UMAP_EXCLUDE_FEATURES: list[str] = _cfg.umap_exclude_features
 REFERENCE_SHOT_COL: str | None = _cfg.reference_shot_col
 
 # ---------------------------------------------------------------------------
@@ -186,8 +187,15 @@ def _projection_feature_cols(data: pd.DataFrame) -> list[str]:
         missing = [c for c in UMAP_FEATURES if c not in data.columns]
         if missing:
             log.warning("[projection] umap_features not found in data: %s", missing)
-        return [c for c in UMAP_FEATURES if c in data.columns]
-    return [c for c in data.select_dtypes(include=[np.number]).columns if c != "shot_id"]
+        cols = [c for c in UMAP_FEATURES if c in data.columns]
+    else:
+        cols = [c for c in data.select_dtypes(include=[np.number]).columns if c != "shot_id"]
+    if UMAP_EXCLUDE_FEATURES:
+        excluded = [c for c in UMAP_EXCLUDE_FEATURES if c in cols]
+        if excluded:
+            log.info("[projection] excluding %d columns via umap_exclude_features: %s", len(excluded), excluded)
+        cols = [c for c in cols if c not in UMAP_EXCLUDE_FEATURES]
+    return cols
 
 
 def _compute_projection(data: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
@@ -250,6 +258,24 @@ def _compute_projection(data: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
             f"Use 'umap_features' in config to select a smaller set of well-populated columns."
         )
 
+    # Drop zero- or non-finite-variance columns — StandardScaler divides by std,
+    # so std=0 or std=NaN (from overflow on very large values) produces NaN output.
+    col_stds = X.std()
+    bad_var_cols = col_stds[~np.isfinite(col_stds) | (col_stds == 0)].index.tolist()
+    if bad_var_cols:
+        log.warning(
+            "[%s] dropping %d zero/non-finite-variance columns before scaling: %s",
+            tag,
+            len(bad_var_cols),
+            bad_var_cols,
+        )
+        X = X.drop(columns=bad_var_cols)
+
+    if X.shape[1] == 0:
+        raise ValueError(
+            "No columns with finite variance remain after filtering. Check your feature data."
+        )
+
     log.info("[%s] fitting on %d rows x %d columns", tag, X.shape[0], X.shape[1])
     X_scaled = StandardScaler().fit_transform(X)
 
@@ -272,6 +298,7 @@ def _umap_cache_hash() -> str:
             h.update(chunk)
     features_key = ",".join(sorted(UMAP_FEATURES)) if UMAP_FEATURES else "__all__"
     h.update(features_key.encode())
+    h.update((",".join(sorted(UMAP_EXCLUDE_FEATURES))).encode())
     h.update(PROJECTION_METHOD.encode())
     return h.hexdigest()
 

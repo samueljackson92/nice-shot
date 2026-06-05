@@ -29,6 +29,7 @@ class AppConfig(BaseModel):
     uda: UDAOptions = UDAOptions()
     projection_method: Literal["umap", "pca"] = "umap"
     umap_features: list[str] | None = None
+    umap_exclude_features: list[str] = []
     reference_shot_col: str | None = None
     plugins: list[str] = []
     backend_options: dict[str, Any] = {}
