@@ -1978,7 +1978,7 @@ app.layout = html.Div(
                                                                         type="text",
                                                                         placeholder="Value...",
                                                                         value="",
-                                                                        debounce=True,
+                                                                        debounce=False,
                                                                         style=dict(
                                                                             backgroundColor="#16213e",
                                                                             color=TEXT,
@@ -2689,14 +2689,13 @@ _SCATTER_LAYOUT = dict(
 
 def _apply_filter_mask(active_filters: list | None) -> pd.DataFrame:
     """Return the filtered dataframe (or full df when no filters are active)."""
-    if not active_filters:
+    if active_filters is None:
         return df
     return df[df["shot_id"].isin(active_filters)]
 
 
 @app.callback(
     Output("active-filters", "data"),
-    Output("filter-count-display", "children"),
     Input({"type": "filter-col", "index": ALL}, "value"),
     Input({"type": "filter-op", "index": ALL}, "value"),
     Input({"type": "filter-val", "index": ALL}, "value"),
@@ -2705,7 +2704,7 @@ def _apply_filter_mask(active_filters: list | None) -> pd.DataFrame:
 def apply_filters(cols, ops, vals, logic):
     active = [(c, o, v) for c, o, v in zip(cols, ops, vals) if c and o and v is not None and str(v).strip() != ""]
     if not active:
-        return None, ""
+        return None
 
     masks = []
     for col, op, val in active:
@@ -2733,15 +2732,23 @@ def apply_filters(cols, ops, vals, logic):
             pass
 
     if not masks:
-        return None, ""
+        return None
 
     mask = masks[0]
     for m in masks[1:]:
         mask = (mask | m) if logic == "OR" else (mask & m)
 
-    shot_ids = df.loc[mask, "shot_id"].tolist()
-    n = int(mask.sum())
-    return shot_ids, f"{n:,} / {len(df):,} shots shown"
+    return df.loc[mask, "shot_id"].tolist()
+
+
+@app.callback(
+    Output("filter-count-display", "children"),
+    Input("active-filters", "data"),
+)
+def update_filter_count(active_filters):
+    if active_filters is None:
+        return ""
+    return f"{len(active_filters):,} / {len(df):,} shots shown"
 
 
 @app.callback(
