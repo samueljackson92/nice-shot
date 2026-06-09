@@ -273,9 +273,7 @@ def _compute_projection(data: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         X = X.drop(columns=bad_var_cols)
 
     if X.shape[1] == 0:
-        raise ValueError(
-            "No columns with finite variance remain after filtering. Check your feature data."
-        )
+        raise ValueError("No columns with finite variance remain after filtering. Check your feature data.")
 
     log.info("[%s] fitting on %d rows x %d columns", tag, X.shape[0], X.shape[1])
     X_scaled = StandardScaler().fit_transform(X)
@@ -685,30 +683,35 @@ _CLUSTER_ALGORITHMS = [
 def _sklearn_kmeans(X: list, n_clusters: int) -> list:
     import numpy as np
     from sklearn.cluster import KMeans
+
     return KMeans(n_clusters=n_clusters, random_state=42, n_init="auto").fit_predict(np.array(X)).tolist()
 
 
 def _sklearn_dbscan(X: list, eps: float, min_samples: int) -> list:
     import numpy as np
     from sklearn.cluster import DBSCAN
+
     return DBSCAN(eps=eps, min_samples=min_samples).fit_predict(np.array(X)).tolist()
 
 
 def _sklearn_agglomerative(X: list, n_clusters: int) -> list:
     import numpy as np
     from sklearn.cluster import AgglomerativeClustering
+
     return AgglomerativeClustering(n_clusters=n_clusters).fit_predict(np.array(X)).tolist()
 
 
 def _sklearn_isoforest(X: list, contamination: float) -> list:
     import numpy as np
     from sklearn.ensemble import IsolationForest
+
     return IsolationForest(contamination=contamination, random_state=42).fit_predict(np.array(X)).tolist()
 
 
 def _sklearn_lof(X: list, n_neighbors: int, contamination: float) -> list:
     import numpy as np
     from sklearn.neighbors import LocalOutlierFactor
+
     return LocalOutlierFactor(n_neighbors=n_neighbors, contamination=contamination).fit_predict(np.array(X)).tolist()
 
 
@@ -716,6 +719,7 @@ def _spawn_sklearn(fn, *args):
     """Run fn(*args) in a fresh spawned process to avoid fork+BLAS SIGSEGV."""
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor
+
     ctx = multiprocessing.get_context("spawn")
     with ProcessPoolExecutor(max_workers=1, mp_context=ctx) as exe:
         return exe.submit(fn, *args).result(timeout=120)
@@ -1626,10 +1630,17 @@ app.layout = html.Div(
                                                             children=[
                                                                 dcc.Checklist(
                                                                     id="cluster-use-projection",
-                                                                    options=[{"label": " Use projection coordinates", "value": "projection"}],
+                                                                    options=[
+                                                                        {
+                                                                            "label": " Use projection coordinates",
+                                                                            "value": "projection",
+                                                                        }
+                                                                    ],
                                                                     value=[],
                                                                     inputStyle=dict(marginRight="4px"),
-                                                                    labelStyle=dict(fontSize="11px", color=TEXT, cursor="pointer"),
+                                                                    labelStyle=dict(
+                                                                        fontSize="11px", color=TEXT, cursor="pointer"
+                                                                    ),
                                                                 ),
                                                             ],
                                                         ),
@@ -1772,10 +1783,17 @@ app.layout = html.Div(
                                                             children=[
                                                                 dcc.Checklist(
                                                                     id="outlier-use-projection",
-                                                                    options=[{"label": " Use projection coordinates", "value": "projection"}],
+                                                                    options=[
+                                                                        {
+                                                                            "label": " Use projection coordinates",
+                                                                            "value": "projection",
+                                                                        }
+                                                                    ],
                                                                     value=[],
                                                                     inputStyle=dict(marginRight="4px"),
-                                                                    labelStyle=dict(fontSize="11px", color=TEXT, cursor="pointer"),
+                                                                    labelStyle=dict(
+                                                                        fontSize="11px", color=TEXT, cursor="pointer"
+                                                                    ),
                                                                 ),
                                                             ],
                                                         ),
@@ -2127,7 +2145,9 @@ app.layout = html.Div(
                                                                         }
                                                                         for c in _pair_axis_cols
                                                                     ],
-                                                                    value=_pair_axis_cols[0] if _pair_axis_cols else None,
+                                                                    value=_pair_axis_cols[0]
+                                                                    if _pair_axis_cols
+                                                                    else None,
                                                                     clearable=False,
                                                                     style=DROPDOWN_STYLE,
                                                                 ),
