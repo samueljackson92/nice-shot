@@ -176,6 +176,7 @@ _shot_to_shap_idx: dict[int, int] = {int(s): i for i, s in enumerate(df["shot_id
 
 numeric_cols = sorted(c for c in df.select_dtypes(include=[np.number]).columns if c != "shot_id")
 all_cols = sorted(c for c in df.columns if c != "shot_id")
+_pair_axis_cols = ["shot_id"] + numeric_cols
 
 # ---------------------------------------------------------------------------
 # UMAP
@@ -414,10 +415,14 @@ else:
 _table_cols = [c for c in df.columns if c not in ("umap_x", "umap_y")]
 _CLUSTER_COLOR_VALUE = "__cluster__"
 _OUTLIER_COLOR_VALUE = "__outliers__"
-_color_col_options = [{"label": c, "value": c} for c in all_cols] + [
-    {"label": "Cluster", "value": _CLUSTER_COLOR_VALUE},
-    {"label": "Outliers", "value": _OUTLIER_COLOR_VALUE},
-]
+_color_col_options = (
+    [{"label": "shot_id", "value": "shot_id"}]
+    + [{"label": c, "value": c} for c in all_cols]
+    + [
+        {"label": "Cluster", "value": _CLUSTER_COLOR_VALUE},
+        {"label": "Outliers", "value": _OUTLIER_COLOR_VALUE},
+    ]
+)
 
 _table_column_defs = [
     {"name": c, "id": c, "type": "numeric", "format": {"specifier": ".4g"}}
@@ -2120,9 +2125,9 @@ app.layout = html.Div(
                                                                             "label": c,
                                                                             "value": c,
                                                                         }
-                                                                        for c in numeric_cols
+                                                                        for c in _pair_axis_cols
                                                                     ],
-                                                                    value=numeric_cols[0] if numeric_cols else None,
+                                                                    value=_pair_axis_cols[0] if _pair_axis_cols else None,
                                                                     clearable=False,
                                                                     style=DROPDOWN_STYLE,
                                                                 ),
@@ -2179,10 +2184,10 @@ app.layout = html.Div(
                                                                             "label": c,
                                                                             "value": c,
                                                                         }
-                                                                        for c in numeric_cols
+                                                                        for c in _pair_axis_cols
                                                                     ],
-                                                                    value=numeric_cols[1]
-                                                                    if len(numeric_cols) > 1
+                                                                    value=_pair_axis_cols[1]
+                                                                    if len(_pair_axis_cols) > 1
                                                                     else None,
                                                                     clearable=False,
                                                                     style=DROPDOWN_STYLE,
