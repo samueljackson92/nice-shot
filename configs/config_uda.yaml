@@ -24,7 +24,9 @@ backend: uda
 # For the UDA backend these are passed directly as signal names (e.g. "ip", "ne").
 signals:
   - ip
-  - ane/density
+  - /ane/density
+  - /amb/loopv/lv_c_a07
+  - /AGA/HM12
 
 # Crop time traces to this window (seconds).
 # Applies to both backends.
@@ -38,31 +40,11 @@ time_window:
 uda:
   # Interpolate all signals onto a uniform time grid at this sample rate (Hz).
   # If omitted, the native time axis of the first successfully loaded signal is used.
-  timebase_hz: 1000
+  timebase_hz: 500
 
 # Columns to use as features for the UMAP projection.
 # Defaults to all numeric columns (excluding 'shot') if not set.
 # Changing this list forces the UMAP cache to be recomputed.
 # Shots with NaN in any of these columns are excluded from the projection.
 #
-umap_features:
-  - pohm_max
-  - johm_total
-  - pnbi_max_ss
-  - enbi_max_ss
-  - jnbi_total_ss
-  - pnbi_max_sw
-  - enbi_max_sw
-  - jnbi_total_sw
-  - ip_max
-  - ip_av
-  - kappa_max
-  - te0_max
-  - ne0_max
-  - bt_max
-  - betmhd_max
-  - bepmhd_max
-  - wmhd_ipmax
-  - tautot_max
-
 reference_shot_col: reference__number
