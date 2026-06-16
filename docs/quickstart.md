@@ -253,3 +253,19 @@ Plugins listed under `plugins:` are imported in order before the backends are in
 | `--port PORT` | `8050` | Port |
 | `--workers N` | `4` | Gunicorn worker processes (production mode only) |
 | `--debug / --no-debug` | off | Use Flask dev server instead of gunicorn |
+
+## Friea Installation
+
+Running this software on Friea is generally not recommended. However, if you really wish to run the software on the Friea cluster you need select the python 3.12 mini bundle first:
+
+```sh
+module unload python
+module load python/3.12-minibundle
+pip install nice-shot
+```
+
+Then run with:
+
+```sh
+~/.local/bin/nice-shot 
+```
