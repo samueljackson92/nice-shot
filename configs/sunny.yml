@@ -27,7 +27,7 @@
 #   sal       – fetch live from a SAL server via sal-xarray
 #   postgres  – query a PostgreSQL table via DuckDB's postgres extension
 # ---------------------------------------------------------------------------
-# backend: parquet
+backend: uda
 
 # ---------------------------------------------------------------------------
 # Signals — names of the time-series channels to load and display.
@@ -40,7 +40,6 @@ signals:
     - /amc/plasma_current
     - /ane/density
     - /amb/loopv/lv_c_a07
-    - /AGA/HM12
 
 # ---------------------------------------------------------------------------
 # Time window — crop all time traces to this range (seconds).
