@@ -1,6 +1,6 @@
 [project]
 name = "nice-shot"
-version = "1.1.1"
+version = "1.1.2"
 description = "Interactive tokamak shot dashboard"
 readme = "README.md"
 requires-python = ">=3.11"
