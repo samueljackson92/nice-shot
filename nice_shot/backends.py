@@ -129,14 +129,19 @@ class ShotDataBackend(ABC):
     # ------------------------------------------------------------------
 
     def _prepare(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Coerce object columns to numeric and normalise the shot ID column."""
+        """Coerce object columns to numeric and normalise the shot ID column.
+
+        Only columns that successfully parse as numbers are converted; columns
+        with genuine string values (e.g. machine names) are kept as-is so they
+        remain available as discrete colour hues in the UI.
+        """
         obj_cols = df.select_dtypes(include="object").columns
         if len(obj_cols):
             coerced = df[obj_cols].apply(pd.to_numeric, errors="coerce")
             converted = [c for c in obj_cols if coerced[c].notna().any()]
             if converted:
                 log.info("Coerced %d object column(s) to numeric: %s", len(converted), converted)
-            df[obj_cols] = coerced
+                df[converted] = coerced[converted]
 
         shot_col = detect_shot_col(df)
         if shot_col != "shot_id":

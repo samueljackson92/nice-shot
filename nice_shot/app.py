@@ -200,7 +200,8 @@ def _projection_feature_cols(data: pd.DataFrame) -> list[str]:
 
 
 def _compute_projection(data: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-    """Return (projection, shot_ids) for rows without NaN in the feature columns."""
+    """Return (projection, shot_ids) using mean imputation for NaN/Inf values."""
+    from sklearn.impute import SimpleImputer
     from sklearn.preprocessing import StandardScaler
 
     tag = PROJECTION_METHOD.upper()
@@ -232,32 +233,24 @@ def _compute_projection(data: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
             "All feature columns are entirely NaN. Use 'umap_features' in config to specify columns with data."
         )
 
-    # Coerce to float so np.isfinite can handle all column dtypes.
+    # Coerce to float and replace ±inf with NaN so the imputer can handle them.
     X = X.apply(pd.to_numeric, errors="coerce")
+    X = X.replace([np.inf, -np.inf], np.nan)
 
-    # Drop rows with NaN or inf in any remaining column.
-    finite = np.isfinite(X.values)
-    valid = finite.all(axis=1)
-    n_dropped = int((~valid).sum())
-    if n_dropped:
-        bad_cols = X.columns[~finite.all(axis=0)].tolist()
-        log.warning(
-            "[%s] dropping %d / %d shots (%.1f%%) with NaN/inf in: %s",
+    # Report columns that have any missing values (informational only — they are imputed, not dropped).
+    nan_cols = X.columns[X.isna().any()].tolist()
+    if nan_cols:
+        log.info(
+            "[%s] imputing NaN/inf values in %d column(s) with column means: %s",
             tag,
-            n_dropped,
-            len(data),
-            n_dropped / len(data) * 100,
-            bad_cols,
+            len(nan_cols),
+            nan_cols,
         )
 
-    X = X[valid]
-    shot_ids = data.loc[valid, "shot_id"].values
-
-    if X.empty:
-        raise ValueError(
-            f"No shots remain after dropping NaN rows across {X.shape[1]} columns. "
-            f"Use 'umap_features' in config to select a smaller set of well-populated columns."
-        )
+    # Impute remaining NaN with column means so all shots are included in the projection.
+    X_imputed = SimpleImputer(strategy="mean").fit_transform(X.values.astype(float))
+    X = pd.DataFrame(X_imputed, columns=X.columns, index=X.index)
+    shot_ids = data["shot_id"].values
 
     # Drop zero- or non-finite-variance columns — StandardScaler divides by std,
     # so std=0 or std=NaN (from overflow on very large values) produces NaN output.
@@ -299,6 +292,7 @@ def _umap_cache_hash() -> str:
     h.update(features_key.encode())
     h.update((",".join(sorted(UMAP_EXCLUDE_FEATURES))).encode())
     h.update(PROJECTION_METHOD.encode())
+    h.update(b"impute:mean")  # invalidates caches from the old row-drop approach
     return h.hexdigest()
 
 
@@ -727,6 +721,7 @@ def _spawn_sklearn(fn, *args):
 
 def _run_clustering(algorithm: str, features: list[str], n_clusters: int, eps: float, min_samples: int) -> dict:
     """Fit clustering on selected feature columns. Returns {str(shot_id): cluster_id}."""
+    from sklearn.impute import SimpleImputer
     from sklearn.preprocessing import StandardScaler
 
     valid = [f for f in features if f in df.columns]
@@ -735,7 +730,8 @@ def _run_clustering(algorithm: str, features: list[str], n_clusters: int, eps: f
     sub = df[["shot_id"] + valid].copy()
     if sub.empty:
         return {}
-    X = StandardScaler().fit_transform(sub[valid].fillna(0).values.astype(float)).tolist()
+    raw = sub[valid].replace([np.inf, -np.inf], np.nan).values.astype(float)
+    X = StandardScaler().fit_transform(SimpleImputer(strategy="mean").fit_transform(raw)).tolist()
     if algorithm == "kmeans":
         labels = _spawn_sklearn(_sklearn_kmeans, X, int(n_clusters))
     elif algorithm == "dbscan":
@@ -860,6 +856,7 @@ _INLIER_BLUE = "#4488cc"
 
 def _run_outlier_detection(algorithm: str, features: list[str], contamination: float, n_neighbors: int) -> dict:
     """Return {str(shot_id): 1 (outlier) | 0 (inlier)}."""
+    from sklearn.impute import SimpleImputer
     from sklearn.preprocessing import StandardScaler
 
     valid = [f for f in features if f in df.columns]
@@ -868,7 +865,8 @@ def _run_outlier_detection(algorithm: str, features: list[str], contamination: f
     sub = df[["shot_id"] + valid].copy()
     if sub.empty:
         return {}
-    X = StandardScaler().fit_transform(sub[valid].fillna(0).values.astype(float)).tolist()
+    raw = sub[valid].replace([np.inf, -np.inf], np.nan).values.astype(float)
+    X = StandardScaler().fit_transform(SimpleImputer(strategy="mean").fit_transform(raw)).tolist()
     if algorithm == "isoforest":
         preds = _spawn_sklearn(_sklearn_isoforest, X, contamination)
     elif algorithm == "lof":
