@@ -1,0 +1,33 @@
+# NiceShot configuration for long-format equilibrium statistics.
+#
+# Run with:
+#   nice-shot --shot-data shot_equilibrium.parquet --config configs/equilibrium.yml
+#
+# The input file holds one row per (shot, variable) pair — the same statistics
+# (mean, std, iqr, entropy, …) repeated for each equilibrium variable. Setting
+# variable_column below puts a variable selector in the header; only the rows
+# for the selected variable are read, and the projection is computed for them
+# alone.
+
+backend: uda
+
+# Column identifying which variable each row describes.
+variable_column: variable_name
+
+signals:
+  - ip
+  - ANE_DENSITY
+  - ANB_TOT_SUM_POWER
+  - AYC_TE_CORE
+
+time_window:
+  min_time: 0.0
+  max_time: 1.0
+
+# PCA keeps switching between variables near-instant. UMAP gives better cluster
+# structure but costs ~30-60 s the first time each variable is selected (the
+# result is then cached to disk per variable).
+projection_method: pca
+
+# umap_features is omitted, so every numeric statistic column is used as a
+# projection feature.

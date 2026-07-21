@@ -128,14 +128,18 @@ class ShotDataBackend(ABC):
     # Shared helpers available to all subclasses.
     # ------------------------------------------------------------------
 
-    def _prepare(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _prepare(self, df: pd.DataFrame, coerce_objects: bool = True) -> pd.DataFrame:
         """Coerce object columns to numeric and normalise the shot ID column.
 
         Only columns that successfully parse as numbers are converted; columns
         with genuine string values (e.g. machine names) are kept as-is so they
         remain available as discrete colour hues in the UI.
+
+        Set *coerce_objects* to ``False`` for already-typed sources (e.g. Parquet)
+        where the dtypes must be derivable from the file schema alone, without
+        inspecting any rows.
         """
-        obj_cols = df.select_dtypes(include="object").columns
+        obj_cols = df.select_dtypes(include="object").columns if coerce_objects else []
         if len(obj_cols):
             coerced = df[obj_cols].apply(pd.to_numeric, errors="coerce")
             converted = [c for c in obj_cols if coerced[c].notna().any()]
@@ -169,6 +173,95 @@ class ParquetShotDataBackend(ShotDataBackend):
     def load(self, path: str) -> pd.DataFrame:
         log.info("Loading %s (Parquet)...", path)
         return self._prepare(pd.read_parquet(path))
+
+
+# ---------------------------------------------------------------------------
+# VariableShotDataBackend — abstract base for long-format shot statistics.
+# ---------------------------------------------------------------------------
+
+
+class VariableShotDataBackend(ShotDataBackend):
+    """Base class for *long-format* shot statistics.
+
+    A long-format file holds one row per ``(shot, variable)`` pair: the same set
+    of statistic columns is repeated for every variable, distinguished by a
+    variable column named in ``config.options["variable_column"]``.
+
+    Implementations must be able to list the available variables and read the
+    rows for a single variable **without** reading the whole file, so the UI can
+    defer loading until the user picks one.
+    """
+
+    @property
+    def variable_column(self) -> str:
+        return self.config.options["variable_column"]
+
+    @abstractmethod
+    def variables(self, path: str) -> list[str]:
+        """Return the sorted, unique variable names available in *path*."""
+
+    @abstractmethod
+    def schema(self, path: str) -> pd.DataFrame:
+        """Return an empty DataFrame with the columns and dtypes of a loaded variable.
+
+        Must not read row data — the UI builds its widgets from this at startup.
+        """
+
+    @abstractmethod
+    def load_variable(self, path: str, variable: str) -> pd.DataFrame:
+        """Load only the rows for *variable* and return a normalised DataFrame."""
+
+    def load(self, path: str) -> pd.DataFrame:
+        raise NotImplementedError(
+            "Long-format sources are read one variable at a time — use load_variable() instead of load()."
+        )
+
+
+class LongParquetShotDataBackend(VariableShotDataBackend):
+    """Reads a long-format Parquet file one variable at a time.
+
+    Uses Parquet predicate pushdown so only the row groups holding the requested
+    variable are read, and derives the column schema from file metadata alone.
+    """
+
+    def _normalise(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Flatten the index and drop redundant columns.
+
+        Index levels are promoted to columns so the shot ID becomes addressable.
+        The variable column itself is dropped: it is constant within a single
+        variable's slice and so carries no information. A label may appear both
+        as an index level and as a data column (pandas writes MultiIndex levels
+        as columns), in which case the duplicate is removed first.
+        """
+        df = df.loc[:, ~df.columns.duplicated()]
+        index_names = [n for n in (df.index.names or []) if n is not None]
+        if index_names:
+            df = df.drop(columns=[c for c in index_names if c in df.columns], errors="ignore")
+            df = df.reset_index()
+        df = df.drop(columns=[self.variable_column], errors="ignore")
+        return self._prepare(df, coerce_objects=False)
+
+    def variables(self, path: str) -> list[str]:
+        col = self.variable_column
+        values = pd.read_parquet(path, columns=[col])[col]
+        if isinstance(values, pd.DataFrame):  # column also present as an index level
+            values = values.iloc[:, 0]
+        result = sorted(str(v) for v in values.dropna().unique())
+        log.info("Found %d variables in %s (column '%s')", len(result), path, col)
+        return result
+
+    def schema(self, path: str) -> pd.DataFrame:
+        import pyarrow.parquet as pq
+
+        empty = pq.ParquetFile(path).schema_arrow.empty_table().to_pandas()
+        return self._normalise(empty)
+
+    def load_variable(self, path: str, variable: str) -> pd.DataFrame:
+        log.info("Loading variable '%s' from %s (Parquet)...", variable, path)
+        df = pd.read_parquet(path, filters=[(self.variable_column, "==", variable)])
+        result = self._normalise(df)
+        log.info("Loaded %d rows for variable '%s'", len(result), variable)
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +497,7 @@ class PostgresTraceBackend(TraceBackend):
 # ---------------------------------------------------------------------------
 
 _shot_data_registry: dict[str, type[ShotDataBackend]] = {}
+_variable_shot_data_registry: dict[str, type[VariableShotDataBackend]] = {}
 _trace_registry: dict[str, type[TraceBackend]] = {}
 
 
@@ -415,6 +509,15 @@ def register_shot_data_backend(ext: str, cls: type[ShotDataBackend]) -> None:
     replace built-in implementations.
     """
     _shot_data_registry[ext.lower()] = cls
+
+
+def register_variable_shot_data_backend(ext: str, cls: type[VariableShotDataBackend]) -> None:
+    """Register *cls* as the long-format shot-data backend for extension *ext*.
+
+    Used when ``variable_column`` is set in config. *ext* must include the
+    leading dot, e.g. ``".parquet"``.
+    """
+    _variable_shot_data_registry[ext.lower()] = cls
 
 
 def register_trace_backend(name: str, cls: type[TraceBackend]) -> None:
@@ -441,6 +544,22 @@ def create_shot_data_backend(path: str, config: BackendConfig) -> ShotDataBacken
     return cls(config)
 
 
+def create_variable_shot_data_backend(path: str, config: BackendConfig) -> VariableShotDataBackend:
+    """Return an instantiated :class:`VariableShotDataBackend` for *path*.
+
+    The backend is chosen by file extension. Raises :exc:`ValueError` if no
+    long-format backend is registered for the extension.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    cls = _variable_shot_data_registry.get(ext)
+    if cls is None:
+        raise ValueError(
+            f"variable_column is set, but no long-format shot data backend is registered "
+            f"for extension '{ext}'. Registered: {list(_variable_shot_data_registry)}"
+        )
+    return cls(config)
+
+
 def create_trace_backend(name: str, config: BackendConfig) -> TraceBackend:
     """Return an instantiated :class:`TraceBackend` for *name*.
 
@@ -461,6 +580,8 @@ register_shot_data_backend(".csv", CsvShotDataBackend)
 register_shot_data_backend(".parquet", ParquetShotDataBackend)
 register_shot_data_backend(".pq", ParquetShotDataBackend)
 register_shot_data_backend(".pg", PostgresShotDataBackend)
+register_variable_shot_data_backend(".parquet", LongParquetShotDataBackend)
+register_variable_shot_data_backend(".pq", LongParquetShotDataBackend)
 register_trace_backend("parquet", LocalParquetTraceBackend)
 register_trace_backend("uda", UdaTraceBackend)
 register_trace_backend("sal", SalTraceBackend)

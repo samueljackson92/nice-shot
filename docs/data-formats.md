@@ -25,6 +25,29 @@ All other columns can be anything. Object columns that can be coerced to numeric
 
 ---
 
+## Long-format shot statistics (`variable_column`)
+
+A file holding **one row per `(shot, variable)` pair** — the same set of statistic columns repeated for every variable, distinguished by a variable column. Set [`variable_column`](configuration.md#variable_column) in config to the name of that column; the file is then read one variable at a time and a variable selector appears in the header.
+
+**Required:** a shot-ID column (detected as above) and the column named by `variable_column`. Both may be stored as index levels — pandas writes MultiIndex levels as columns, and they are flattened on load. All remaining columns are the per-variable statistics.
+
+**Example schema** (`variable_column: variable_name`):
+
+| shot_id | variable_name | mean | std | iqr | nan_percent |
+|---------|---------------|------|-----|-----|-------------|
+| 11766   | beta_pol      | 0.084 | 0.034 | 0.012 | 0.42 |
+| 11766   | q95           | 7.455 | 1.204 | 0.331 | 0.42 |
+| 11767   | beta_pol      | 0.081 | 0.029 | 0.011 | 0.39 |
+| 11767   | q95           | 7.201 | 1.118 | 0.298 | 0.39 |
+
+Every variable must share the same columns — the UI builds its widgets once from the file schema. The variable column itself is dropped after loading, since it is constant within one variable's slice.
+
+Only `.parquet` / `.pq` are supported, because the format is read with predicate pushdown so a single variable can be fetched without scanning the whole file. Column dtypes are taken from the Parquet schema and used as-is; unlike flat CSV sources, string columns are **not** sniffed and coerced to numeric, so store numeric statistics with numeric types.
+
+Nothing is read from the file body until a variable is chosen. Each variable's projection is cached to its own file next to the `--umap-cache` path.
+
+---
+
 ## Shot statistics from PostgreSQL (`.pg`, postgres backend)
 
 Use a `.pg` file extension for `--shot-data` to read shot statistics directly from a PostgreSQL table via DuckDB's postgres extension. The file path stem is used as the default table name (e.g. `--shot-data shots.pg` reads from the `shots` table). Configure the connection and table via `backend_options` in config:

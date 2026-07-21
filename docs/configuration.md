@@ -80,6 +80,23 @@ Changing this list invalidates the cache.
 
 ---
 
+## `variable_column`
+
+```yaml
+variable_column: variable_name
+```
+
+Enables **long-format mode** for the shot statistics file: one row per `(shot, variable)` pair, with the named column identifying which variable each row describes. See [Data Formats](data-formats.md#long-format-shot-statistics-variable_column) for the required layout.
+
+When set, a variable selector appears in the header. No row data is read at startup — only the list of variable names. Picking a variable reads just that variable's rows and computes the projection, similarity index and reference graph for them alone. Each variable's projection is cached separately on disk, so revisiting one is instant.
+
+Omit (or set to `null`) for a normal flat, one-row-per-shot file.
+
+!!! note
+    `variable_column` cannot be combined with `--projection`, since a single pre-computed embedding cannot describe more than one variable. Startup fails with an error if both are given.
+
+---
+
 ## `reference_shot_col`
 
 ```yaml

@@ -28,6 +28,7 @@ class AppConfig(BaseModel):
     time_window: TimeWindow = TimeWindow()
     uda: UDAOptions = UDAOptions()
     projection_method: Literal["umap", "pca"] = "umap"
+    variable_column: str | None = None
     umap_features: list[str] | None = None
     umap_exclude_features: list[str] = []
     reference_shot_col: str | None = None

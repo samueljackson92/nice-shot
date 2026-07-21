@@ -9,6 +9,8 @@ import importlib
 import logging
 import os
 import sys
+from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 import dash
@@ -22,8 +24,11 @@ from plotly.subplots import make_subplots
 
 from nice_shot.backends import (
     BackendConfig,
+    ShotDataBackend,
+    VariableShotDataBackend,
     create_shot_data_backend,
     create_trace_backend,
+    create_variable_shot_data_backend,
     detect_shot_col,
 )
 
@@ -135,6 +140,7 @@ MIN_TIME: float = _cfg.time_window.min_time
 MAX_TIME: float = _cfg.time_window.max_time
 UDA_TIMEBASE_HZ: float | None = _cfg.uda.timebase_hz
 PROJECTION_METHOD: str = _cfg.projection_method
+VARIABLE_COLUMN: str | None = _cfg.variable_column
 UMAP_FEATURES: list[str] | None = _cfg.umap_features
 UMAP_EXCLUDE_FEATURES: list[str] = _cfg.umap_exclude_features
 REFERENCE_SHOT_COL: str | None = _cfg.reference_shot_col
@@ -147,6 +153,10 @@ for _plugin in _cfg.plugins:
     log.info("Loading plugin: %s", _plugin)
     importlib.import_module(_plugin)
 
+_backend_options = dict(_cfg.backend_options)
+if VARIABLE_COLUMN:
+    _backend_options["variable_column"] = VARIABLE_COLUMN
+
 _backend_config = BackendConfig(
     shot_data_path=SHOT_DATA_PATH,
     data_dir=MASTU_DATA_DIR,
@@ -154,10 +164,24 @@ _backend_config = BackendConfig(
     min_time=MIN_TIME,
     max_time=MAX_TIME,
     timebase_hz=UDA_TIMEBASE_HZ,
-    options=_cfg.backend_options,
+    options=_backend_options,
 )
 
-_shot_data_backend = create_shot_data_backend(SHOT_DATA_PATH, _backend_config)
+# Long-format mode: the file holds one row per (shot, variable) and the user
+# picks which variable to load. Nothing is read from the file body until then.
+VARIABLE_MODE: bool = VARIABLE_COLUMN is not None
+if VARIABLE_MODE and PROJECTION_PATH is not None:
+    raise ValueError(
+        "--projection cannot be combined with variable_column: a single pre-computed "
+        "embedding cannot describe more than one variable. Remove one of them."
+    )
+
+_variable_backend: VariableShotDataBackend | None = None
+_flat_backend: ShotDataBackend | None = None
+if VARIABLE_MODE:
+    _variable_backend = create_variable_shot_data_backend(SHOT_DATA_PATH, _backend_config)
+else:
+    _flat_backend = create_shot_data_backend(SHOT_DATA_PATH, _backend_config)
 _trace_backend = create_trace_backend(BACKEND, _backend_config)
 
 SHOW_TRACES: bool = _trace_backend.is_available()
@@ -168,15 +192,9 @@ if not SHOW_TRACES:
         MASTU_DATA_DIR,
     )
 
-df = _shot_data_backend.load(SHOT_DATA_PATH)
-
-# Build positional index for SHAP lookup before the UMAP merge drops rows.
-# The .nc file uses 0-based indices matching the original sorted shot order.
-_shot_to_shap_idx: dict[int, int] = {int(s): i for i, s in enumerate(df["shot_id"].values) if pd.notna(s)}
-
-numeric_cols = sorted(c for c in df.select_dtypes(include=[np.number]).columns if c != "shot_id")
-all_cols = sorted(c for c in df.columns if c != "shot_id")
-_pair_axis_cols = ["shot_id"] + numeric_cols
+# Variable names offered in the selector — read from the variable column alone,
+# so startup stays instant regardless of file size.
+VARIABLES: list[str] = _variable_backend.variables(SHOT_DATA_PATH) if _variable_backend else []
 
 # ---------------------------------------------------------------------------
 # UMAP
@@ -283,7 +301,7 @@ def _compute_projection(data: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     return projection, shot_ids
 
 
-def _umap_cache_hash() -> str:
+def _umap_cache_hash(variable: str | None) -> str:
     h = hashlib.md5()
     with open(SHOT_DATA_PATH, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
@@ -293,20 +311,31 @@ def _umap_cache_hash() -> str:
     h.update((",".join(sorted(UMAP_EXCLUDE_FEATURES))).encode())
     h.update(PROJECTION_METHOD.encode())
     h.update(b"impute:mean")  # invalidates caches from the old row-drop approach
+    h.update((variable or "__all__").encode())
     return h.hexdigest()
 
 
-def get_projection(data: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-    """Return (projection, shot_ids), loading from cache when valid."""
-    _hash_path = UMAP_CACHE_PATH + ".hash"
-    _shots_path = UMAP_CACHE_PATH + ".shots.npy"
-    current_hash = _umap_cache_hash()
+def _umap_cache_path(variable: str | None) -> str:
+    """Cache path for *variable* — each variable is projected and cached separately."""
+    if variable is None:
+        return UMAP_CACHE_PATH
+    stem, ext = os.path.splitext(UMAP_CACHE_PATH)
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in variable)
+    return f"{stem}.{safe}{ext}"
 
-    if all(os.path.exists(p) for p in [UMAP_CACHE_PATH, _hash_path, _shots_path]):
+
+def get_projection(data: pd.DataFrame, variable: str | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Return (projection, shot_ids), loading from cache when valid."""
+    cache_path = _umap_cache_path(variable)
+    _hash_path = cache_path + ".hash"
+    _shots_path = cache_path + ".shots.npy"
+    current_hash = _umap_cache_hash(variable)
+
+    if all(os.path.exists(p) for p in [cache_path, _hash_path, _shots_path]):
         with open(_hash_path) as f:
             if f.read().strip() == current_hash:
-                log.info("Loading projection from cache: %s", UMAP_CACHE_PATH)
-                return np.load(UMAP_CACHE_PATH), np.load(_shots_path)
+                log.info("Loading projection from cache: %s", cache_path)
+                return np.load(cache_path), np.load(_shots_path)
         log.info("Shot data or config changed — recomputing projection...")
     else:
         log.info(
@@ -315,15 +344,15 @@ def get_projection(data: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         )
 
     projection, shot_ids = _compute_projection(data)
-    np.save(UMAP_CACHE_PATH, projection)
+    np.save(cache_path, projection)
     np.save(_shots_path, shot_ids.astype(np.int64))
     with open(_hash_path, "w") as f:
         f.write(current_hash)
-    log.info("Projection saved to cache: %s", UMAP_CACHE_PATH)
+    log.info("Projection saved to cache: %s", cache_path)
     return projection, shot_ids
 
 
-def _load_projection_file(path: str) -> tuple[pd.DataFrame, str, str]:
+def _load_projection_file(path: str, data: pd.DataFrame) -> tuple[pd.DataFrame, str, str]:
     """Load a pre-computed projection. Returns (df with shot_id/umap_x/umap_y, x_label, y_label)."""
     ext = os.path.splitext(path)[1].lower()
 
@@ -347,15 +376,15 @@ def _load_projection_file(path: str) -> tuple[pd.DataFrame, str, str]:
                 "rows are matched positionally to the shot data file.",
                 arr.shape,
             )
-            if len(arr) != len(df):
+            if len(arr) != len(data):
                 raise ValueError(
-                    f"Numpy projection has {len(arr)} rows but shot data has {len(df)} rows. "
+                    f"Numpy projection has {len(arr)} rows but shot data has {len(data)} rows. "
                     f"Provide a (n, 3) array with shot_id as the first column, or use a "
                     f".csv / .parquet file."
                 )
             result = pd.DataFrame(
                 {
-                    "shot_id": df["shot_id"].values,
+                    "shot_id": data["shot_id"].values,
                     "umap_x": arr[:, 0],
                     "umap_y": arr[:, 1],
                 }
@@ -389,65 +418,9 @@ def _load_projection_file(path: str) -> tuple[pd.DataFrame, str, str]:
     return result, x_col, y_col
 
 
-if PROJECTION_PATH is not None:
-    _emb_df, UMAP_X_LABEL, UMAP_Y_LABEL = _load_projection_file(PROJECTION_PATH)
-    df = df.merge(_emb_df, on="shot_id", how="inner")
-else:
-    _projection, _proj_shot_ids = get_projection(df)
-    _umap_df = pd.DataFrame(
-        {
-            "shot_id": _proj_shot_ids,
-            "umap_x": _projection[:, 0],
-            "umap_y": _projection[:, 1],
-        }
-    )
-    df = df.merge(_umap_df, on="shot_id", how="inner")
-    UMAP_X_LABEL, UMAP_Y_LABEL = "Dim 1", "Dim 2"
-
-_table_cols = [c for c in df.columns if c not in ("umap_x", "umap_y")]
-_CLUSTER_COLOR_VALUE = "__cluster__"
-_OUTLIER_COLOR_VALUE = "__outliers__"
-_color_col_options = (
-    [{"label": "shot_id", "value": "shot_id"}]
-    + [{"label": c, "value": c} for c in all_cols]
-    + [
-        {"label": "Cluster", "value": _CLUSTER_COLOR_VALUE},
-        {"label": "Outliers", "value": _OUTLIER_COLOR_VALUE},
-    ]
-)
-
-_table_column_defs = [
-    {"name": c, "id": c, "type": "numeric", "format": {"specifier": ".4g"}}
-    if pd.api.types.is_float_dtype(df[c])
-    else {"name": c, "id": c}
-    for c in _table_cols
-]
-
-# ---------------------------------------------------------------------------
-# Nearest-neighbour similarity index
-# ---------------------------------------------------------------------------
 from sklearn.impute import SimpleImputer  # noqa: E402
 from sklearn.neighbors import NearestNeighbors  # noqa: E402
 from sklearn.preprocessing import StandardScaler  # noqa: E402
-
-_search_cols = [f for f in (UMAP_FEATURES or numeric_cols) if f in df.columns]
-_search_raw = df[["shot_id"] + _search_cols].copy()
-_search_raw[_search_cols] = _search_raw[_search_cols].replace([np.inf, -np.inf], np.nan)
-_search_ids = _search_raw["shot_id"].values
-# Impute with column means so every shot is searchable, even those with missing features.
-_search_imputer = SimpleImputer(strategy="mean")
-_search_X = StandardScaler().fit_transform(
-    _search_imputer.fit_transform(_search_raw[_search_cols].values.astype(float))
-)
-_search_nn = NearestNeighbors(metric="euclidean", algorithm="auto").fit(_search_X)
-log.info("Similarity index built: %d shots × %d features", len(_search_ids), len(_search_cols))
-
-# ---------------------------------------------------------------------------
-# Reference-shot graph
-# ---------------------------------------------------------------------------
-SHOW_REF_TOGGLE = False
-_ref_adjacency: dict[int, list[int]] = {}  # undirected: shot_id → [connected shot_ids]
-_ref_parent: dict[int, int] = {}  # directed: shot_id → its reference shot
 
 
 def _build_reference_graph(data: pd.DataFrame, col: str) -> tuple[dict[int, list[int]], dict[int, int]]:
@@ -465,18 +438,165 @@ def _build_reference_graph(data: pd.DataFrame, col: str) -> tuple[dict[int, list
     return adjacency, parent
 
 
-if REFERENCE_SHOT_COL and REFERENCE_SHOT_COL in df.columns:
-    _ref_adjacency, _ref_parent = _build_reference_graph(df, REFERENCE_SHOT_COL)
-    if _ref_adjacency:
-        SHOW_REF_TOGGLE = True
-        log.info(
-            "Reference graph: '%s' — %d edges, %d unique nodes",
-            REFERENCE_SHOT_COL,
-            len(_ref_parent),
-            len(_ref_adjacency),
-        )
+# ---------------------------------------------------------------------------
+# Dataset — everything derived from one variable's rows.
+#
+# In long-format mode a dataset is built lazily the first time a variable is
+# selected and then cached per process. The selected variable is held in browser
+# state and passed into every data callback, so each gunicorn worker builds its
+# own cache on demand and no worker can serve another variable's data.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Dataset:
+    """A loaded, projected shot table plus the indices built from it."""
+
+    df: pd.DataFrame
+    search_cols: list[str]
+    search_ids: np.ndarray
+    search_X: np.ndarray
+    search_nn: NearestNeighbors
+    x_label: str = "Dim 1"
+    y_label: str = "Dim 2"
+    ref_adjacency: dict[int, list[int]] = field(default_factory=dict)
+    ref_parent: dict[int, int] = field(default_factory=dict)
+    shap_idx: dict[int, int] = field(default_factory=dict)
+
+
+def _numeric_cols_of(data: pd.DataFrame) -> list[str]:
+    return sorted(c for c in data.select_dtypes(include=[np.number]).columns if c != "shot_id")
+
+
+def _build_dataset(data: pd.DataFrame, variable: str | None) -> Dataset:
+    """Project *data*, build the similarity index and the reference graph."""
+    # Positional index for SHAP lookup, taken before the projection merge drops rows.
+    # The .nc file uses 0-based indices matching the original sorted shot order.
+    shap_idx = {int(s): i for i, s in enumerate(data["shot_id"].values) if pd.notna(s)}
+    # Taken before the merge so the projection coordinates never become search features.
+    feature_cols = _numeric_cols_of(data)
+
+    if PROJECTION_PATH is not None:
+        emb, x_label, y_label = _load_projection_file(PROJECTION_PATH, data)
+        data = data.merge(emb, on="shot_id", how="inner")
     else:
-        log.warning("reference_shot_col='%s' produced no valid edges.", REFERENCE_SHOT_COL)
+        projection, proj_shot_ids = get_projection(data, variable)
+        emb = pd.DataFrame(
+            {
+                "shot_id": proj_shot_ids,
+                "umap_x": projection[:, 0],
+                "umap_y": projection[:, 1],
+            }
+        )
+        data = data.merge(emb, on="shot_id", how="inner")
+        x_label, y_label = "Dim 1", "Dim 2"
+
+    search_cols = [f for f in (UMAP_FEATURES or feature_cols) if f in data.columns]
+    search_raw = data[["shot_id"] + search_cols].copy()
+    search_raw[search_cols] = search_raw[search_cols].replace([np.inf, -np.inf], np.nan)
+    # Impute with column means so every shot is searchable, even those with missing features.
+    search_X = StandardScaler().fit_transform(
+        SimpleImputer(strategy="mean").fit_transform(search_raw[search_cols].values.astype(float))
+    )
+    search_nn = NearestNeighbors(metric="euclidean", algorithm="auto").fit(search_X)
+    log.info("Similarity index built: %d shots × %d features", len(search_raw), len(search_cols))
+
+    ref_adjacency: dict[int, list[int]] = {}
+    ref_parent: dict[int, int] = {}
+    if REFERENCE_SHOT_COL and REFERENCE_SHOT_COL in data.columns:
+        ref_adjacency, ref_parent = _build_reference_graph(data, REFERENCE_SHOT_COL)
+        if ref_adjacency:
+            log.info(
+                "Reference graph: '%s' — %d edges, %d unique nodes",
+                REFERENCE_SHOT_COL,
+                len(ref_parent),
+                len(ref_adjacency),
+            )
+        else:
+            log.warning("reference_shot_col='%s' produced no valid edges.", REFERENCE_SHOT_COL)
+
+    return Dataset(
+        df=data,
+        search_cols=search_cols,
+        search_ids=search_raw["shot_id"].values,
+        search_X=search_X,
+        search_nn=search_nn,
+        x_label=x_label,
+        y_label=y_label,
+        ref_adjacency=ref_adjacency,
+        ref_parent=ref_parent,
+        shap_idx=shap_idx,
+    )
+
+
+@lru_cache(maxsize=8)
+def get_dataset(variable: str | None) -> Dataset | None:
+    """Return the dataset for *variable*, loading and caching it on first use.
+
+    Returns ``None`` in long-format mode until the user picks a variable — that
+    is the signal for callbacks to render their "select a variable" empty state.
+    """
+    if _variable_backend is not None:
+        if variable is None:
+            return None
+        data = _variable_backend.load_variable(SHOT_DATA_PATH, variable)
+    else:
+        assert _flat_backend is not None  # exactly one backend is created at startup
+        data = _flat_backend.load(SHOT_DATA_PATH)
+    return _build_dataset(data, variable)
+
+
+def _require_dataset(variable: str | None) -> Dataset:
+    """Like :func:`get_dataset` but never ``None`` — for flat mode, where the
+    single dataset is always available."""
+    ds = get_dataset(variable)
+    if ds is None:
+        raise RuntimeError(f"No dataset available for variable {variable!r}")
+    return ds
+
+
+# ---------------------------------------------------------------------------
+# Column schema — drives every widget in the layout.
+#
+# Long-format mode reads it from file metadata (no rows), which is valid because
+# every variable in the file shares the same columns; flat mode takes it from
+# the one dataset, which is loaded eagerly here exactly as it always was.
+# ---------------------------------------------------------------------------
+if _variable_backend is not None:
+    _schema_df = _variable_backend.schema(SHOT_DATA_PATH)
+else:
+    _schema_df = _require_dataset(None).df
+
+numeric_cols = _numeric_cols_of(_schema_df)
+all_cols = sorted(c for c in _schema_df.columns if c != "shot_id")
+_pair_axis_cols = ["shot_id"] + numeric_cols
+_search_cols = [f for f in (UMAP_FEATURES or numeric_cols) if f in _schema_df.columns]
+
+_table_cols = [c for c in _schema_df.columns if c not in ("umap_x", "umap_y")]
+_CLUSTER_COLOR_VALUE = "__cluster__"
+_OUTLIER_COLOR_VALUE = "__outliers__"
+_color_col_options = (
+    [{"label": "shot_id", "value": "shot_id"}]
+    + [{"label": c, "value": c} for c in all_cols]
+    + [
+        {"label": "Cluster", "value": _CLUSTER_COLOR_VALUE},
+        {"label": "Outliers", "value": _OUTLIER_COLOR_VALUE},
+    ]
+)
+
+_table_column_defs = [
+    {"name": c, "id": c, "type": "numeric", "format": {"specifier": ".4g"}}
+    if pd.api.types.is_float_dtype(_schema_df[c])
+    else {"name": c, "id": c}
+    for c in _table_cols
+]
+
+# The toggle is shown whenever the reference column exists. In flat mode we can
+# also confirm it yields edges; in long-format mode no rows are loaded yet.
+if VARIABLE_MODE:
+    SHOW_REF_TOGGLE = bool(REFERENCE_SHOT_COL and REFERENCE_SHOT_COL in _schema_df.columns)
+else:
+    SHOW_REF_TOGGLE = bool(_require_dataset(None).ref_adjacency)
 
 # ---------------------------------------------------------------------------
 # SHAP data loading
@@ -600,11 +720,11 @@ def _trace_layout(**extra) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def make_shap_fig(shot_id: int) -> str | None:
+def make_shap_fig(ds: Dataset, shot_id: int) -> str | None:
     """Return a base64-encoded PNG of the SHAP decision plot for one shot, or None."""
     if _shap_da is None:
         return None
-    idx = _shot_to_shap_idx.get(int(shot_id))
+    idx = ds.shap_idx.get(int(shot_id))
     if idx is None:
         return None
 
@@ -719,15 +839,17 @@ def _spawn_sklearn(fn, *args):
         return exe.submit(fn, *args).result(timeout=120)
 
 
-def _run_clustering(algorithm: str, features: list[str], n_clusters: int, eps: float, min_samples: int) -> dict:
+def _run_clustering(
+    ds: Dataset, algorithm: str, features: list[str], n_clusters: int, eps: float, min_samples: int
+) -> dict:
     """Fit clustering on selected feature columns. Returns {str(shot_id): cluster_id}."""
     from sklearn.impute import SimpleImputer
     from sklearn.preprocessing import StandardScaler
 
-    valid = [f for f in features if f in df.columns]
+    valid = [f for f in features if f in ds.df.columns]
     if not valid:
         return {}
-    sub = df[["shot_id"] + valid].copy()
+    sub = ds.df[["shot_id"] + valid].copy()
     if sub.empty:
         return {}
     raw = sub[valid].replace([np.inf, -np.inf], np.nan).values.astype(float)
@@ -854,15 +976,17 @@ _OUTLIER_RED = "#ff4444"
 _INLIER_BLUE = "#4488cc"
 
 
-def _run_outlier_detection(algorithm: str, features: list[str], contamination: float, n_neighbors: int) -> dict:
+def _run_outlier_detection(
+    ds: Dataset, algorithm: str, features: list[str], contamination: float, n_neighbors: int
+) -> dict:
     """Return {str(shot_id): 1 (outlier) | 0 (inlier)}."""
     from sklearn.impute import SimpleImputer
     from sklearn.preprocessing import StandardScaler
 
-    valid = [f for f in features if f in df.columns]
+    valid = [f for f in features if f in ds.df.columns]
     if not valid:
         return {}
-    sub = df[["shot_id"] + valid].copy()
+    sub = ds.df[["shot_id"] + valid].copy()
     if sub.empty:
         return {}
     raw = sub[valid].replace([np.inf, -np.inf], np.nan).values.astype(float)
@@ -982,9 +1106,9 @@ def _render_outlier_traces_fig(outlier_traces_data: dict) -> go.Figure:
 # ---------------------------------------------------------------------------
 
 
-def get_reference_graph(shot_id: int) -> set[int]:
+def get_reference_graph(ds: Dataset, shot_id: int) -> set[int]:
     """BFS over the undirected reference graph — returns the full connected component."""
-    if not _ref_adjacency:
+    if not ds.ref_adjacency:
         return set()
     visited: set[int] = set()
     queue = [shot_id]
@@ -993,7 +1117,7 @@ def get_reference_graph(shot_id: int) -> set[int]:
         if cur in visited:
             continue
         visited.add(cur)
-        queue.extend(n for n in _ref_adjacency.get(cur, []) if n not in visited)
+        queue.extend(n for n in ds.ref_adjacency.get(cur, []) if n not in visited)
     return visited
 
 
@@ -1007,6 +1131,7 @@ def _ref_shot_color(shot_id: int, min_id: int, max_id: int) -> str:
 
 def _add_reference_graph_overlay(
     fig: go.Figure,
+    ds: Dataset,
     plot_df: pd.DataFrame,
     x_col: str,
     y_col: str,
@@ -1017,7 +1142,7 @@ def _add_reference_graph_overlay(
     Nodes and edges are coloured by shot_id along the Turbo scale so the
     temporal ordering is immediately visible (old = dark purple, new = yellow).
     """
-    graph = get_reference_graph(selected_shot)
+    graph = get_reference_graph(ds, selected_shot)
     if len(graph) <= 1:
         return fig
 
@@ -1056,7 +1181,7 @@ def _add_reference_graph_overlay(
 
     # -- Edges — one trace per edge so each can carry its own colour --
     seen_edges: set[frozenset] = set()
-    for shot, ref in _ref_parent.items():
+    for shot, ref in ds.ref_parent.items():
         if shot not in graph or ref not in graph:
             continue
         edge = frozenset((shot, ref))
@@ -1158,6 +1283,7 @@ app.layout = html.Div(
         dcc.Store(id="active-filters"),
         dcc.Store(id="selected-shot"),
         dcc.Store(id="_table_scroll_sink"),
+        dcc.Store(id="_table_repaint_sink"),
         dcc.Store(id="ref-graph-enabled", data=False),
         dcc.Store(id="cluster-labels", data=None),
         dcc.Store(id="cluster-names", data={}),
@@ -1167,6 +1293,9 @@ app.layout = html.Div(
         dcc.Store(id="search-results", data=None),
         dcc.Store(id="search-traces-data", data=None),
         dcc.Store(id="search-highlight-enabled", data=True),
+        # Selected variable in long-format mode; always None in flat mode, where
+        # get_dataset(None) returns the single dataset.
+        dcc.Store(id="selected-variable", data=None),
         dcc.Download(id="table-download"),
         # Header
         html.Div(
@@ -1182,6 +1311,35 @@ app.layout = html.Div(
                 html.Span(
                     "NiceShot!",
                     style=dict(fontSize="20px", fontWeight="600", color=ACCENT),
+                ),
+                *(
+                    [
+                        html.Div(
+                            style=dict(
+                                display="flex",
+                                alignItems="center",
+                                gap="8px",
+                                flex="1",
+                                justifyContent="center",
+                            ),
+                            children=[
+                                html.Label(
+                                    "Variable:",
+                                    style=dict(fontSize="13px", color=TEXT),
+                                ),
+                                dcc.Dropdown(
+                                    id="variable-select",
+                                    options=[{"label": v, "value": v} for v in VARIABLES],
+                                    value=None,
+                                    clearable=False,
+                                    placeholder="Select a variable…",
+                                    style=dict(DROPDOWN_STYLE, width="260px"),
+                                ),
+                            ],
+                        )
+                    ]
+                    if VARIABLE_MODE
+                    else []
                 ),
                 html.Span(id="filter-count-display", style=dict(fontSize="13px", color="#888")),
             ],
@@ -1221,7 +1379,7 @@ app.layout = html.Div(
                                     style=dict(marginRight="16px"),
                                 ),
                                 html.Span(
-                                    f"shots: {len(df):,}",
+                                    id="shot-count-display",
                                     style=dict(marginRight="16px"),
                                 ),
                                 html.Span(
@@ -2332,7 +2490,7 @@ app.layout = html.Div(
                                         dash_table.DataTable(
                                             id="shot-table",
                                             columns=_table_column_defs,  # type: ignore
-                                            data=df[_table_cols].to_dict("records"),
+                                            data=[],
                                             virtualization=True,
                                             page_action="none",
                                             sort_action="native",
@@ -2710,11 +2868,34 @@ _SCATTER_LAYOUT = dict(
 )
 
 
-def _apply_filter_mask(active_filters: list | None) -> pd.DataFrame:
-    """Return the filtered dataframe (or full df when no filters are active)."""
+SELECT_VARIABLE_MSG = "Select a variable to load data"
+
+
+def _empty_fig(message: str) -> go.Figure:
+    """A blank, dark-themed figure carrying a centred message."""
+    fig = go.Figure()
+    fig.add_annotation(
+        text=message,
+        xref="paper",
+        yref="paper",
+        x=0.5,
+        y=0.5,
+        showarrow=False,
+        font=dict(size=14, color="#aaa"),
+    )
+    fig.update_layout(
+        paper_bgcolor=DARK_BG,
+        plot_bgcolor="#16213e",
+        margin=dict(l=50, r=30, t=40, b=50),
+    )
+    return fig
+
+
+def _apply_filter_mask(ds: Dataset, active_filters: list | None) -> pd.DataFrame:
+    """Return the filtered dataframe (or the full table when no filters are active)."""
     if active_filters is None:
-        return df
-    return df[df["shot_id"].isin(active_filters)]
+        return ds.df
+    return ds.df[ds.df["shot_id"].isin(active_filters)]
 
 
 @app.callback(
@@ -2723,8 +2904,12 @@ def _apply_filter_mask(active_filters: list | None) -> pd.DataFrame:
     Input({"type": "filter-op", "index": ALL}, "value"),
     Input({"type": "filter-val", "index": ALL}, "value"),
     Input("filter-logic", "value"),
+    Input("selected-variable", "data"),
 )
-def apply_filters(cols, ops, vals, logic):
+def apply_filters(cols, ops, vals, logic, variable):
+    ds = get_dataset(variable)
+    if ds is None:
+        return None
     active = [(c, o, v) for c, o, v in zip(cols, ops, vals) if c and o and v is not None and str(v).strip() != ""]
     if not active:
         return None
@@ -2736,7 +2921,7 @@ def apply_filters(cols, ops, vals, logic):
         except (ValueError, TypeError):
             v = str(val)
         try:
-            s = df[col]
+            s = ds.df[col]
             if op == ">=":
                 masks.append(s >= v)
             elif op == "<=":
@@ -2761,17 +2946,28 @@ def apply_filters(cols, ops, vals, logic):
     for m in masks[1:]:
         mask = (mask | m) if logic == "OR" else (mask & m)
 
-    return df.loc[mask, "shot_id"].tolist()
+    return ds.df.loc[mask, "shot_id"].tolist()
 
 
 @app.callback(
     Output("filter-count-display", "children"),
     Input("active-filters", "data"),
+    Input("selected-variable", "data"),
 )
-def update_filter_count(active_filters):
-    if active_filters is None:
+def update_filter_count(active_filters, variable):
+    ds = get_dataset(variable)
+    if ds is None or active_filters is None:
         return ""
-    return f"{len(active_filters):,} / {len(df):,} shots shown"
+    return f"{len(active_filters):,} / {len(ds.df):,} shots shown"
+
+
+@app.callback(
+    Output("shot-count-display", "children"),
+    Input("selected-variable", "data"),
+)
+def update_shot_count(variable):
+    ds = get_dataset(variable)
+    return "shots: —" if ds is None else f"shots: {len(ds.df):,}"
 
 
 @app.callback(
@@ -2881,6 +3077,7 @@ def toggle_search_highlight(n_clicks, currently_enabled):
     Input("outlier-labels", "data"),
     Input("search-results", "data"),
     Input("search-highlight-enabled", "data"),
+    Input("selected-variable", "data"),
 )
 def update_umap(
     color_col,
@@ -2892,15 +3089,19 @@ def update_umap(
     outlier_labels,
     search_results,
     search_highlight_enabled,
+    variable,
 ) -> go.Figure:
-    plot_df = _apply_filter_mask(active_filters)
+    ds = get_dataset(variable)
+    if ds is None:
+        return _empty_fig(SELECT_VARIABLE_MSG)
+    plot_df = _apply_filter_mask(ds, active_filters)
     kwargs: dict = dict(
         data_frame=plot_df,
         x="umap_x",
         y="umap_y",
         custom_data=["shot_id"],
         hover_name="shot_id",
-        labels={"umap_x": UMAP_X_LABEL, "umap_y": UMAP_Y_LABEL},
+        labels={"umap_x": ds.x_label, "umap_y": ds.y_label},
     )
     if color_col == _CLUSTER_COLOR_VALUE and cluster_labels:
         enriched, col = _apply_cluster_color(plot_df, cluster_labels, cluster_names or {})
@@ -2924,7 +3125,7 @@ def update_umap(
     )
     fig.update_layout(**_SCATTER_LAYOUT, uirevision="umap")
     if ref_graph_enabled and selected_shot is not None:
-        _add_reference_graph_overlay(fig, plot_df, "umap_x", "umap_y", selected_shot)
+        _add_reference_graph_overlay(fig, ds, plot_df, "umap_x", "umap_y", selected_shot)
     if search_highlight_enabled:
         _add_search_highlight(fig, plot_df, "umap_x", "umap_y", search_results)
     _add_selection_highlight(fig, plot_df, "umap_x", "umap_y", selected_shot)
@@ -2946,6 +3147,7 @@ def update_umap(
     Input("outlier-labels", "data"),
     Input("search-results", "data"),
     Input("search-highlight-enabled", "data"),
+    Input("selected-variable", "data"),
 )
 def update_pair_plot(
     x_col,
@@ -2961,11 +3163,15 @@ def update_pair_plot(
     outlier_labels,
     search_results,
     search_highlight_enabled,
+    variable,
 ) -> go.Figure:
+    ds = get_dataset(variable)
+    if ds is None:
+        return _empty_fig(SELECT_VARIABLE_MSG)
     if not x_col or not y_col:
         return go.Figure()
 
-    plot_df = _apply_filter_mask(active_filters)
+    plot_df = _apply_filter_mask(ds, active_filters)
     kwargs: dict = dict(
         data_frame=plot_df,
         x=x_col,
@@ -3000,14 +3206,14 @@ def update_pair_plot(
         yaxis_type=y_scale,
     )
     if ref_graph_enabled and selected_shot is not None:
-        _add_reference_graph_overlay(fig, plot_df, x_col, y_col, selected_shot)
+        _add_reference_graph_overlay(fig, ds, plot_df, x_col, y_col, selected_shot)
     if search_highlight_enabled:
         _add_search_highlight(fig, plot_df, x_col, y_col, search_results)
     _add_selection_highlight(fig, plot_df, x_col, y_col, selected_shot)
     return fig
 
 
-def _extract_shot_id(click_data: dict) -> int | None:
+def _extract_shot_id(ds: Dataset, click_data: dict) -> int | None:
     """Pull shot id out of Plotly 6 clickData.
 
     Plotly 6 serialises customdata as binary (dtype/bdata/shape), so the
@@ -3015,7 +3221,7 @@ def _extract_shot_id(click_data: dict) -> int | None:
     shot id in three places and try them in order of reliability:
       1. hovertext  – set via hover_name, always a plain string
       2. customdata – decoded by Plotly.js, shape depends on version
-      3. pointIndex – index into df (works only when no color split)
+      3. pointIndex – index into the shot table (only when no color split)
     """
     if not click_data or not click_data.get("points"):
         return None
@@ -3042,7 +3248,7 @@ def _extract_shot_id(click_data: dict) -> int | None:
     pi = point.get("pointIndex")
     if pi is not None and "color" not in click_data:
         try:
-            return int(df.iloc[int(pi)]["shot_id"])
+            return int(ds.df.iloc[int(pi)]["shot_id"])
         except Exception:
             pass
 
@@ -3054,15 +3260,22 @@ def _extract_shot_id(click_data: dict) -> int | None:
     Input("umap-plot", "clickData"),
     Input("pair-plot", "clickData"),
     Input("shot-table", "active_cell"),
+    Input("selected-variable", "data"),
     State("shot-table", "derived_virtual_data"),
     prevent_initial_call=True,
 )
-def update_selected_shot(umap_click, pair_click, active_cell, virtual_data):
+def update_selected_shot(umap_click, pair_click, active_cell, variable, virtual_data):
     triggered_id = dash.ctx.triggered_id
+    # Switching variable clears the selection — the shot may not exist in the new table.
+    if triggered_id == "selected-variable":
+        return None
+    ds = get_dataset(variable)
+    if ds is None:
+        return None
     if triggered_id == "umap-plot":
-        return _extract_shot_id(umap_click)
+        return _extract_shot_id(ds, umap_click)
     if triggered_id == "pair-plot":
-        return _extract_shot_id(pair_click)
+        return _extract_shot_id(ds, pair_click)
     if triggered_id == "shot-table" and active_cell and virtual_data:
         return int(virtual_data[active_cell["row"]]["shot_id"])
     return dash.no_update
@@ -3071,13 +3284,17 @@ def update_selected_shot(umap_click, pair_click, active_cell, virtual_data):
 @app.callback(
     Output("shot-table", "data"),
     Input("shot-id-search", "value"),
+    Input("selected-variable", "data"),
 )
-def filter_table_by_shot_id(search):
+def filter_table_by_shot_id(search, variable):
+    ds = get_dataset(variable)
+    if ds is None:
+        return []
     if not search or not str(search).strip():
-        return df[_table_cols].to_dict("records")
+        return ds.df[_table_cols].to_dict("records")
     query = str(search).strip()
-    mask = df["shot_id"].astype(str).str.contains(query, na=False)
-    return df.loc[mask, _table_cols].to_dict("records")
+    mask = ds.df["shot_id"].astype(str).str.contains(query, na=False)
+    return ds.df.loc[mask, _table_cols].to_dict("records")
 
 
 @app.callback(
@@ -3123,17 +3340,59 @@ app.clientside_callback(
 )
 
 
+# The virtualized DataTable does not recompute its scroll viewport when its data
+# is first populated while the table is already visible — it renders zero rows
+# until a resize event forces a re-measure (switching tabs happens to do this).
+# Nudge it with a resize whenever the row data changes so the rows always paint.
+app.clientside_callback(
+    """
+    function(data) {
+        var n = (data && data.length) || 0;
+        if (n === 0) { return null; }
+        var tries = 0;
+        function nudge() {
+            tries += 1;
+            var table = document.getElementById('shot-table');
+            if (table) {
+                if (table.querySelectorAll('tbody tr td').length > 0) { return; }
+                // The virtualizer measures the element via an element-resize
+                // detector, not window.resize. Hiding then re-showing the table
+                // forces a re-measure — the same thing a tab-switch does — so the
+                // rows paint even when the data arrives while the table is visible.
+                table.style.display = 'none';
+                void table.offsetHeight;
+                table.style.display = '';
+            }
+            if (tries < 40) { setTimeout(nudge, 100); }
+        }
+        window.requestAnimationFrame(nudge);
+        return null;
+    }
+    """,
+    Output("_table_repaint_sink", "data"),
+    Input("shot-table", "data"),
+    prevent_initial_call=True,
+)
+
+
 @app.callback(
     Output("shot-info-panel", "children"),
     Input("selected-shot", "data"),
+    Input("selected-variable", "data"),
 )
-def update_shot_info(selected_shot):
+def update_shot_info(selected_shot, variable):
+    ds = get_dataset(variable)
+    if ds is None:
+        return html.Span(
+            SELECT_VARIABLE_MSG,
+            style=dict(fontSize="11px", color="#555"),
+        )
     if selected_shot is None:
         return html.Span(
             "Click a point to see shot details",
             style=dict(fontSize="11px", color="#555"),
         )
-    row = df[df["shot_id"] == selected_shot]
+    row = ds.df[ds.df["shot_id"] == selected_shot]
     if row.empty:
         return html.Span(
             f"No data for shot {selected_shot}",
@@ -3195,14 +3454,16 @@ if SHOW_TRACES:
         @app.callback(
             Output("shap-container", "children"),
             Input("selected-shot", "data"),
+            Input("selected-variable", "data"),
         )
-        def update_shap(shot_id):
-            if shot_id is None:
+        def update_shap(shot_id, variable):
+            ds = get_dataset(variable)
+            if ds is None or shot_id is None:
                 return html.Span(
                     "Click a point to see SHAP values",
                     style=dict(fontSize="11px", color="#555"),
                 )
-            img_b64 = make_shap_fig(shot_id)
+            img_b64 = make_shap_fig(ds, shot_id)
             if img_b64 is None:
                 return html.Span(
                     f"No SHAP data for shot {shot_id}",
@@ -3231,9 +3492,13 @@ if SHOW_TRACES:
     State("cluster-eps", "value"),
     State("cluster-min-samples", "value"),
     State("cluster-use-projection", "value"),
+    State("selected-variable", "data"),
     prevent_initial_call=True,
 )
-def run_clustering(n_clicks, algorithm, features, n_clusters, eps, min_samples, use_projection):
+def run_clustering(n_clicks, algorithm, features, n_clusters, eps, min_samples, use_projection, variable):
+    ds = get_dataset(variable)
+    if ds is None:
+        return dash.no_update, SELECT_VARIABLE_MSG, dash.no_update, dash.no_update
     active_features = ["umap_x", "umap_y"] if use_projection else list(features or [])
     if not active_features:
         return dash.no_update, "Select at least one feature", dash.no_update, dash.no_update
@@ -3242,6 +3507,7 @@ def run_clustering(n_clicks, algorithm, features, n_clusters, eps, min_samples, 
         return dash.no_update, "eps must be greater than 0", dash.no_update, dash.no_update
     try:
         labels = _run_clustering(
+            ds,
             algorithm=algorithm or "kmeans",
             features=active_features,
             n_clusters=int(n_clusters or 5),
@@ -3355,10 +3621,14 @@ def render_centroid_fig(centroid_data, cluster_names):
     Input("download-table-btn", "n_clicks"),
     State("cluster-labels", "data"),
     State("cluster-names", "data"),
+    State("selected-variable", "data"),
     prevent_initial_call=True,
 )
-def download_table(n_clicks, cluster_labels, cluster_names):
-    export = df[_table_cols].copy()
+def download_table(n_clicks, cluster_labels, cluster_names, variable):
+    ds = get_dataset(variable)
+    if ds is None:
+        return dash.no_update
+    export = ds.df[_table_cols].copy()
     if cluster_labels:
         label_map = {int(k): v for k, v in cluster_labels.items()}
         export["cluster_id"] = export["shot_id"].map(label_map)
@@ -3434,14 +3704,19 @@ def toggle_outlier_features_row(use_proj):
     State("outlier-contamination", "value"),
     State("outlier-n-neighbors", "value"),
     State("outlier-use-projection", "value"),
+    State("selected-variable", "data"),
     prevent_initial_call=True,
 )
-def run_outlier_detection(n_clicks, algorithm, features, contamination, n_neighbors, use_projection):
+def run_outlier_detection(n_clicks, algorithm, features, contamination, n_neighbors, use_projection, variable):
+    ds = get_dataset(variable)
+    if ds is None:
+        return dash.no_update, SELECT_VARIABLE_MSG, dash.no_update, dash.no_update
     active_features = ["umap_x", "umap_y"] if use_projection else list(features or [])
     if not active_features:
         return dash.no_update, "Select at least one feature", dash.no_update, dash.no_update
     try:
         labels = _run_outlier_detection(
+            ds,
             algorithm=algorithm or "isoforest",
             features=active_features,
             contamination=float(contamination or 0.1),
@@ -3494,33 +3769,19 @@ def render_outlier_traces(outlier_traces_data):
     Output("corr-plot", "figure"),
     Input("corr-features", "value"),
     Input("active-filters", "data"),
+    Input("selected-variable", "data"),
 )
-def update_correlation(features, active_filters):
-    def _empty(msg):
-        fig = go.Figure()
-        fig.add_annotation(
-            text=msg,
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-            font=dict(size=14, color="#aaa"),
-        )
-        fig.update_layout(
-            paper_bgcolor=DARK_BG,
-            plot_bgcolor="#16213e",
-            margin=dict(l=50, r=30, t=40, b=50),
-        )
-        return fig
-
+def update_correlation(features, active_filters, variable):
+    ds = get_dataset(variable)
+    if ds is None:
+        return _empty_fig(SELECT_VARIABLE_MSG)
     if not features or len(features) < 2:
-        return _empty("Select at least 2 features")
+        return _empty_fig("Select at least 2 features")
 
-    plot_df = _apply_filter_mask(active_filters)
+    plot_df = _apply_filter_mask(ds, active_filters)
     valid = [f for f in features if f in plot_df.columns and pd.api.types.is_numeric_dtype(plot_df[f])]
     if len(valid) < 2:
-        return _empty("Need at least 2 numeric features")
+        return _empty_fig("Need at least 2 numeric features")
 
     corr = plot_df[valid].corr().fillna(0)
     labels = corr.columns.tolist()
@@ -3582,8 +3843,12 @@ def populate_search_from_selection(selected_shot):
     State("search-query-shot", "value"),
     State("search-k", "value"),
     State("search-features", "value"),
+    State("selected-variable", "data"),
 )
-def find_similar_shots(_n, selected_shot, query_shot_id, k, features):
+def find_similar_shots(_n, selected_shot, query_shot_id, k, features, variable):
+    ds = get_dataset(variable)
+    if ds is None:
+        return None, SELECT_VARIABLE_MSG, []
     # When triggered by shot selection, use that shot; otherwise use typed input
     if dash.ctx.triggered_id == "selected-shot":
         query_shot_id = selected_shot
@@ -3594,14 +3859,14 @@ def find_similar_shots(_n, selected_shot, query_shot_id, k, features):
     k = int(k or 10)
 
     # Find row in the search index
-    idx = np.where(_search_ids == query_id)[0]
+    idx = np.where(ds.search_ids == query_id)[0]
     if len(idx) == 0:
         return None, f"Shot {query_id} not found in search index", []
 
     # If the user selected different features, rebuild a local index with imputation
-    valid_features = [f for f in (features or _search_cols) if f in df.columns]
-    if valid_features and set(valid_features) != set(_search_cols):
-        sub = df[["shot_id"] + valid_features].copy()
+    valid_features = [f for f in (features or ds.search_cols) if f in ds.df.columns]
+    if valid_features and set(valid_features) != set(ds.search_cols):
+        sub = ds.df[["shot_id"] + valid_features].copy()
         sub[valid_features] = sub[valid_features].replace([np.inf, -np.inf], np.nan)
         local_ids = sub["shot_id"].values
         local_X = StandardScaler().fit_transform(
@@ -3615,9 +3880,9 @@ def find_similar_shots(_n, selected_shot, query_shot_id, k, features):
         result_ids = [int(local_ids[i]) for i in indices[0] if int(local_ids[i]) != query_id][:k]
         result_scores = [float(d) for i, d in zip(indices[0], distances[0]) if int(local_ids[i]) != query_id][:k]
     else:
-        distances, indices = _search_nn.kneighbors(_search_X[idx], n_neighbors=min(k + 1, len(_search_ids)))
-        result_ids = [int(_search_ids[i]) for i in indices[0] if int(_search_ids[i]) != query_id][:k]
-        result_scores = [float(d) for i, d in zip(indices[0], distances[0]) if int(_search_ids[i]) != query_id][:k]
+        distances, indices = ds.search_nn.kneighbors(ds.search_X[idx], n_neighbors=min(k + 1, len(ds.search_ids)))
+        result_ids = [int(ds.search_ids[i]) for i in indices[0] if int(ds.search_ids[i]) != query_id][:k]
+        result_scores = [float(d) for i, d in zip(indices[0], distances[0]) if int(ds.search_ids[i]) != query_id][:k]
 
     table_data = [
         {"shot_id": sid, "rank": rank + 1, "score": score}
@@ -3656,6 +3921,21 @@ def render_search_traces(search_traces_data):
         return empty_traces_fig("Select a shot to load similar traces"), ""
     fig = _render_outlier_traces_fig(search_traces_data)
     return fig, f"Traces for {len(search_traces_data)} similar shot(s)"
+
+
+# ---------------------------------------------------------------------------
+# Variable selection
+# ---------------------------------------------------------------------------
+
+if VARIABLE_MODE:
+
+    @app.callback(
+        Output("selected-variable", "data"),
+        Input("variable-select", "value"),
+    )
+    def select_variable(variable):
+        """Publish the chosen variable so every data callback reloads for it."""
+        return variable
 
 
 # ---------------------------------------------------------------------------
