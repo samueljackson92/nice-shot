@@ -473,25 +473,27 @@ class FairMastTraceBackend(TraceBackend):
         return None, signal
 
     def is_available(self) -> bool:
-        try:
-            import fsspec
+        import fsspec
 
+        try:
             storage_options = self._storage_options()
             fs, path = fsspec.core.url_to_fs(self.config.data_dir, **storage_options)
             return fs.isdir(path) or fs.exists(path)
-        except ImportError:
-            log.warning('FAIR MAST backend requires optional dependencies: pip install "nice-shot[fairmast]"')
-            return False
         except Exception as exc:
             log.warning("FAIR MAST backend unavailable: %s", exc)
             return False
 
-    def _open_group(self, url: str, group: str | None):
+    def _open_tree(self, url: str):
         import xarray as xr
 
         engine = self._ENGINE[self._format()]
         storage_options = self._storage_options()
-        return xr.open_dataset(url, group=group, engine=engine, storage_options=storage_options or None)
+        return xr.open_datatree(
+            url,
+            engine=engine,
+            storage_options=storage_options or None,
+            create_default_indexes=False,
+        )
 
     def load(self, shot_id: int) -> pd.DataFrame | None:
         cfg = self.config
@@ -504,34 +506,35 @@ class FairMastTraceBackend(TraceBackend):
         else:
             time_ref = None
 
-        opened_groups: dict[str | None, Any] = {}
         signal_data: dict[str, np.ndarray] = {}
 
-        for signal in cfg.signals:
-            group, var = self._split_signal(signal)
-            try:
-                if group not in opened_groups:
-                    opened_groups[group] = self._open_group(url, group)
-                ds = opened_groups[group]
-
-                if time_ref is None:
-                    time_ref = ds.coords["time"].values.astype(float)
-
-                da = ds[var].interp(time=time_ref)
-                if da.ndim != 1:
-                    raise ValueError(
-                        f"'{signal}' has shape {da.shape} (dims {da.dims}) — only scalar "
-                        f"(time-only) variables are supported"
-                    )
-                signal_data[signal] = da.values
-            except Exception as exc:
+        try:
+            tree = self._open_tree(url)
+        except Exception as exc:
+            for signal in cfg.signals:
                 log.error("[fairmast] Could not load '%s' for shot %d: %s", signal, shot_id, exc)
+            return None
 
-        for ds in opened_groups.values():
-            try:
-                ds.close()
-            except Exception:
-                pass
+        try:
+            for signal in cfg.signals:
+                group, var = self._split_signal(signal)
+                try:
+                    ds = tree[group].dataset if group else tree.dataset
+
+                    if time_ref is None:
+                        time_ref = ds.coords["time"].values.astype(float)
+
+                    da = ds[var].interp(time=time_ref)
+                    if da.ndim != 1:
+                        raise ValueError(
+                            f"'{signal}' has shape {da.shape} (dims {da.dims}) — only scalar "
+                            f"(time-only) variables are supported"
+                        )
+                    signal_data[signal] = da.values
+                except Exception as exc:
+                    log.error("[fairmast] Could not load '%s' for shot %d: %s", signal, shot_id, exc)
+        finally:
+            tree.close()
 
         if time_ref is None:
             return None

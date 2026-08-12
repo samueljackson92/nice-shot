@@ -18,7 +18,7 @@ Controls how per-shot time traces are loaded.
 | `uda` | Fetches live data from UDA via `uda-xarray`. URL form: `uda://<signal>:<shot>`. Requires `uda-xarray` installed separately. |
 | `sal` | Fetches live data from SAL via `sal-xarray`. URL form: `sal://pulse/<shot>/<signal>`. Requires `sal-xarray` installed separately. |
 | `postgres` | Queries a PostgreSQL table via DuckDB's postgres extension. Requires `dsn` in `backend_options`. The time-trace panel is hidden if the database is unreachable at startup. |
-| `fairmast` | Reads per-shot Zarr or netCDF stores (local or remote, e.g. FAIR MAST's S3-hosted level2 data) via `xarray`. Requires `pip install "nice-shot[fairmast]"`. The time-trace panel is hidden if `--data-dir` is unreachable at startup. |
+| `fairmast` | Reads per-shot Zarr or netCDF stores (local or remote, e.g. FAIR MAST's S3-hosted level2 data) via `xarray`. The time-trace panel is hidden if `--data-dir` is unreachable at startup. |
 
 ---
 
@@ -167,7 +167,7 @@ backend_options:
       endpoint_url: https://s3.echo.stfc.ac.uk
 ```
 
-Loads per-shot Zarr or netCDF-4 stores via `xarray`, one file per shot at `<data_dir>/<shot_id>.zarr` (or `.nc`). `data_dir` may be a local directory or any URL understood by `fsspec` (e.g. `s3://...`). Requires the optional `fairmast` extra: `pip install "nice-shot[fairmast]"`.
+Loads per-shot Zarr or netCDF-4 stores via `xarray`, one file per shot at `<data_dir>/<shot_id>.zarr` (or `.nc`). `data_dir` may be a local directory or any URL understood by `fsspec` (e.g. `s3://...`).
 
 Signals are `"<group>/<variable>"` strings identifying a diagnostic group and variable within the store (e.g. `thomson_scattering/t_e`); a name with no `/` is read from the store's root group. **Only scalar (time-only) variables are supported** — multi-dimensional profile variables (e.g. Thomson scattering channel profiles, equilibrium 2-D fields) are skipped with a logged error rather than crashing the trace load.
 

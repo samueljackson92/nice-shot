@@ -39,7 +39,6 @@ Python ≥ 3.12
 ```sh
 pip install nice-shot
 pip install "nice-shot[shap]"       # + SHAP plots, xarray, matplotlib
-pip install "nice-shot[fairmast]"   # + FAIR MAST trace backend (Zarr/netCDF, local or remote)
 ```
 
 ---
