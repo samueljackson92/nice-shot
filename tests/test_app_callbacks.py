@@ -64,7 +64,7 @@ def test_download_table_produces_csv_payload(app_module):
 
 
 def test_run_clustering_callback_returns_labels_and_message(app_module):
-    labels, msg, umap_color, pair_color = app_module.run_clustering(
+    labels, representatives, msg, umap_color, pair_color = app_module.run_clustering(
         1,  # n_clicks
         "kmeans",  # algorithm
         ["feature_1", "feature_2"],  # features
@@ -78,10 +78,16 @@ def test_run_clustering_callback_returns_labels_and_message(app_module):
     assert umap_color == app_module._CLUSTER_COLOR_VALUE
     assert pair_color == app_module._CLUSTER_COLOR_VALUE
     assert "cluster" in msg.lower()
+    # Every representative is a real shot belonging to the cluster it represents.
+    assert set(representatives.keys()) == {str(cid) for cid in set(labels.values()) if cid >= 0}
+    for cid_str, shot_id in representatives.items():
+        assert labels[str(shot_id)] == int(cid_str)
 
 
 def test_run_clustering_callback_no_features_selected(app_module):
-    labels, msg, umap_color, pair_color = app_module.run_clustering(1, "kmeans", [], 2, 0.5, 5, False, None)
+    labels, representatives, msg, umap_color, pair_color = app_module.run_clustering(
+        1, "kmeans", [], 2, 0.5, 5, False, None
+    )
     assert msg == "Select at least one feature"
 
 

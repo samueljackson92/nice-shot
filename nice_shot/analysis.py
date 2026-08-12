@@ -356,11 +356,12 @@ def _extract_shot_id(df: pd.DataFrame, click_data: dict | None) -> int | None:
 # ---------------------------------------------------------------------------
 
 
-def _sklearn_kmeans(X: list, n_clusters: int) -> list:
+def _sklearn_kmeans(X: list, n_clusters: int) -> dict:
     import numpy as np
     from sklearn.cluster import KMeans
 
-    return KMeans(n_clusters=n_clusters, random_state=42, n_init="auto").fit_predict(np.array(X)).tolist()
+    km = KMeans(n_clusters=n_clusters, random_state=42, n_init="auto").fit(np.array(X))
+    return {"labels": km.labels_.tolist(), "centers": km.cluster_centers_.tolist()}
 
 
 def _sklearn_dbscan(X: list, eps: float, min_samples: int) -> list:
@@ -406,30 +407,60 @@ def _spawn_sklearn(fn, *args):
 # ---------------------------------------------------------------------------
 
 
+def _cluster_representatives(
+    X: np.ndarray, shot_ids: np.ndarray, labels: list[int], centers: list[list[float]] | None
+) -> dict[str, int]:
+    """Pick one real shot per cluster: nearest to `centers` (kmeans) or to the
+    within-cluster barycenter (other algorithms). Never averages/synthesizes a shot.
+    """
+    labels_arr = np.asarray(labels)
+    reps: dict[str, int] = {}
+    for cid in sorted(set(labels)):
+        if cid < 0:
+            continue
+        mask = labels_arr == cid
+        cluster_X = X[mask]
+        cluster_shot_ids = shot_ids[mask]
+        center = np.asarray(centers[cid]) if centers is not None else cluster_X.mean(axis=0)
+        dists = np.linalg.norm(cluster_X - center, axis=1)
+        reps[str(int(cid))] = int(cluster_shot_ids[int(np.argmin(dists))])
+    return reps
+
+
 def _run_clustering(
     df: pd.DataFrame, algorithm: str, features: list[str], n_clusters: int, eps: float, min_samples: int
-) -> dict:
-    """Fit clustering on selected feature columns. Returns {str(shot_id): cluster_id}."""
+) -> tuple[dict, dict]:
+    """Fit clustering on selected feature columns.
+
+    Returns (labels, representatives): `labels` maps {str(shot_id): cluster_id};
+    `representatives` maps {str(cluster_id): representative shot_id} — the real
+    shot closest to that cluster's center/barycenter in feature space.
+    """
     from sklearn.impute import SimpleImputer
     from sklearn.preprocessing import StandardScaler
 
     valid = [f for f in features if f in df.columns]
     if not valid:
-        return {}
+        return {}, {}
     sub = df[["shot_id"] + valid].copy()
     if sub.empty:
-        return {}
+        return {}, {}
     raw = sub[valid].replace([np.inf, -np.inf], np.nan).values.astype(float)
-    X = StandardScaler().fit_transform(SimpleImputer(strategy="mean").fit_transform(raw)).tolist()
+    X = StandardScaler().fit_transform(SimpleImputer(strategy="mean").fit_transform(raw))
+    centers = None
     if algorithm == "kmeans":
-        labels = _spawn_sklearn(_sklearn_kmeans, X, int(n_clusters))
+        result = _spawn_sklearn(_sklearn_kmeans, X.tolist(), int(n_clusters))
+        labels, centers = result["labels"], result["centers"]
     elif algorithm == "dbscan":
-        labels = _spawn_sklearn(_sklearn_dbscan, X, float(eps), int(min_samples))
+        labels = _spawn_sklearn(_sklearn_dbscan, X.tolist(), float(eps), int(min_samples))
     elif algorithm == "agglomerative":
-        labels = _spawn_sklearn(_sklearn_agglomerative, X, int(n_clusters))
+        labels = _spawn_sklearn(_sklearn_agglomerative, X.tolist(), int(n_clusters))
     else:
-        return {}
-    return {str(int(sid)): int(lbl) for sid, lbl in zip(sub["shot_id"].values, labels)}
+        return {}, {}
+    shot_ids = sub["shot_id"].values
+    label_map = {str(int(sid)): int(lbl) for sid, lbl in zip(shot_ids, labels)}
+    representatives = _cluster_representatives(X, shot_ids, labels, centers)
+    return label_map, representatives
 
 
 def _apply_cluster_color(plot_df: pd.DataFrame, cluster_labels: dict, cluster_names: dict) -> tuple[pd.DataFrame, str]:

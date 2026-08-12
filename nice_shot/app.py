@@ -616,46 +616,26 @@ _CLUSTER_ALGORITHMS = [
 ]
 
 
-def _compute_centroids(cluster_labels: dict) -> dict | None:
-    """Load & average time traces per cluster.
+def _load_cluster_representative_traces(representatives: dict) -> dict | None:
+    """Load time traces for the real representative shot of each cluster.
     Returns {str(cluster_id): {col: [values]}} suitable for dcc.Store, or None on failure.
     """
-    if not cluster_labels or not SHOW_TRACES:
+    if not representatives or not SHOW_TRACES:
         return None
 
-    cluster_shots: dict[int, list[int]] = {}
-    for sid_str, cid in cluster_labels.items():
-        if int(cid) < 0:
-            continue
-        cluster_shots.setdefault(int(cid), []).append(int(sid_str))
-
-    if not cluster_shots:
-        return None
-
-    MAX_PER_CLUSTER = 50
     result: dict[str, dict] = {}
-    for cid, shot_ids in sorted(cluster_shots.items()):
-        dfs = []
-        for sid in shot_ids[:MAX_PER_CLUSTER]:
-            try:
-                sdf = load_shot_traces(sid)
-                if sdf is not None and not sdf.empty:
-                    dfs.append(sdf)
-            except Exception:
-                pass
-        if not dfs:
+    for cid_str, shot_id in sorted(representatives.items(), key=lambda kv: int(kv[0])):
+        try:
+            sdf = load_shot_traces(int(shot_id))
+        except Exception:
             continue
-        time_ref = dfs[0]["time"].values
-        averaged: dict[str, list] = {"time": time_ref.tolist()}
+        if sdf is None or sdf.empty:
+            continue
+        entry: dict[str, list] = {"time": sdf["time"].tolist()}
         for sig in TIME_TRACE_SIGNALS:
-            vals = [
-                np.interp(time_ref, d["time"].values, d[sig].fillna(0).values)
-                for d in dfs
-                if sig in d.columns and d[sig].notna().any()
-            ]
-            if vals:
-                averaged[sig] = np.nanmean(vals, axis=0).tolist()
-        result[str(cid)] = averaged
+            if sig in sdf.columns and sdf[sig].notna().any():
+                entry[sig] = sdf[sig].fillna(0).tolist()
+        result[cid_str] = entry
     return result or None
 
 
@@ -974,6 +954,7 @@ app.layout = html.Div(
         dcc.Store(id="_table_repaint_sink"),
         dcc.Store(id="ref-graph-enabled", data=False),
         dcc.Store(id="cluster-labels", data=None),
+        dcc.Store(id="cluster-representatives", data=None),
         dcc.Store(id="cluster-names", data={}),
         dcc.Store(id="centroid-data", data=None),
         dcc.Store(id="outlier-labels", data=None),
@@ -3085,6 +3066,7 @@ if SHOW_TRACES:
 
 @app.callback(
     Output("cluster-labels", "data"),
+    Output("cluster-representatives", "data"),
     Output("cluster-status", "children"),
     Output("umap-color-col", "value"),
     Output("pair-color-col", "value"),
@@ -3101,15 +3083,15 @@ if SHOW_TRACES:
 def run_clustering(n_clicks, algorithm, features, n_clusters, eps, min_samples, use_projection, variable):
     ds = get_dataset(variable)
     if ds is None:
-        return dash.no_update, SELECT_VARIABLE_MSG, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, SELECT_VARIABLE_MSG, dash.no_update, dash.no_update
     active_features = ["umap_x", "umap_y"] if use_projection else list(features or [])
     if not active_features:
-        return dash.no_update, "Select at least one feature", dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, "Select at least one feature", dash.no_update, dash.no_update
     eps_val = float(eps or 0.5)
     if eps_val <= 0:
-        return dash.no_update, "eps must be greater than 0", dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, "eps must be greater than 0", dash.no_update, dash.no_update
     try:
-        labels = _run_clustering(
+        labels, representatives = _run_clustering(
             ds.df,
             algorithm=algorithm or "kmeans",
             features=active_features,
@@ -3119,16 +3101,16 @@ def run_clustering(n_clicks, algorithm, features, n_clusters, eps, min_samples, 
         )
     except Exception as exc:
         log.error("[clustering] %s", exc)
-        return dash.no_update, f"Error: {exc}", dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, f"Error: {exc}", dash.no_update, dash.no_update
     if not labels:
-        return None, "No shots clustered — check features", dash.no_update, dash.no_update
+        return None, None, "No shots clustered — check features", dash.no_update, dash.no_update
     unique = sorted(set(labels.values()))
     n_valid = sum(1 for v in unique if v >= 0)
     noise = sum(1 for v in labels.values() if v < 0)
     msg = f"{n_valid} cluster(s) across {len(labels):,} shots"
     if noise:
         msg += f" · {noise:,} noise"
-    return labels, msg, _CLUSTER_COLOR_VALUE, _CLUSTER_COLOR_VALUE
+    return labels, representatives, msg, _CLUSTER_COLOR_VALUE, _CLUSTER_COLOR_VALUE
 
 
 @app.callback(
@@ -3193,14 +3175,14 @@ def update_cluster_names(name_values, cluster_labels):
 
 @app.callback(
     Output("centroid-data", "data"),
-    Input("cluster-labels", "data"),
+    Input("cluster-representatives", "data"),
     Input("compute-centroid-btn", "n_clicks"),
     prevent_initial_call=True,
 )
-def compute_centroid_data(cluster_labels, _btn):
-    if not cluster_labels:
+def compute_centroid_data(cluster_representatives, _btn):
+    if not cluster_representatives:
         return None
-    return _compute_centroids(cluster_labels)
+    return _load_cluster_representative_traces(cluster_representatives)
 
 
 @app.callback(
@@ -3442,19 +3424,16 @@ def populate_search_from_selection(selected_shot):
     Output("search-status", "children"),
     Output("search-results-table", "data"),
     Input("find-similar-btn", "n_clicks"),
-    Input("selected-shot", "data"),
     State("search-query-shot", "value"),
     State("search-k", "value"),
     State("search-features", "value"),
     State("selected-variable", "data"),
+    prevent_initial_call=True,
 )
-def find_similar_shots(_n, selected_shot, query_shot_id, k, features, variable):
+def find_similar_shots(_n, query_shot_id, k, features, variable):
     ds = get_dataset(variable)
     if ds is None:
         return None, SELECT_VARIABLE_MSG, []
-    # When triggered by shot selection, use that shot; otherwise use typed input
-    if dash.ctx.triggered_id == "selected-shot":
-        query_shot_id = selected_shot
     if query_shot_id is None:
         return None, "", []
 
