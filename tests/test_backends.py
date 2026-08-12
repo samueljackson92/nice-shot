@@ -8,6 +8,7 @@ import pytest
 from nice_shot.backends import (
     BackendConfig,
     CsvShotDataBackend,
+    FairMastTraceBackend,
     LocalParquetTraceBackend,
     LongParquetShotDataBackend,
     ParquetShotDataBackend,
@@ -162,3 +163,7 @@ class TestRegistry:
     def test_create_trace_backend_unknown_name_raises(self):
         with pytest.raises(ValueError, match="No trace backend registered"):
             create_trace_backend("nonexistent", BackendConfig())
+
+    def test_create_trace_backend_fairmast(self):
+        backend = create_trace_backend("fairmast", BackendConfig())
+        assert isinstance(backend, FairMastTraceBackend)

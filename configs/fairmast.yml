@@ -1,0 +1,75 @@
+# Shot Explorer configuration
+#
+# IMPORTANT: unlike the parquet/uda backends, `data_dir` is NOT read from this
+# YAML file — it must be passed on the command line via --data-dir. Without it,
+# --data-dir defaults to data/mastu/ (a local parquet dir), which won't exist/
+# won't be a valid store for this backend, and time traces will be silently
+# disabled ("No data directory — pass --data-dir to enable time traces").
+#
+# Run with (FAIR MAST's public level2 S3 bucket, verified reachable with the
+# storage_options below — no credentials required):
+#   uv run python nice_shot/app.py --config configs/config_fairmast.yaml \
+#       --data-dir s3://mast/level2/shots
+#
+# CLI options (all have defaults):
+#   --config PATH       Path to this config file (default: nice_shot/config.yaml)
+#   --shot-data PATH    Path to shot stats file, .csv or .parquet
+#                       (default: outputs/shot_stats.parquet)
+#   --data-dir PATH     For the fairmast backend, a local directory or fsspec URL
+#                       (e.g. s3://...) holding one <shot_id>.zarr / .nc store per shot
+#                       (default: data/mastu/ — will NOT work for this backend, see above)
+#   --umap-cache PATH   Path to UMAP embedding cache, created if missing
+#                       (default: outputs/umap_embedding.npy)
+#   --host HOST         Host to bind to (default: 0.0.0.0)
+#   --port PORT         Port to listen on (default: 8050)
+#   --no-debug          Disable Dash debug mode
+#
+# Requires the optional 'fairmast' extra: pip install "nice-shot[fairmast]"
+
+# Backend for loading per-shot time traces.
+# fairmast – read per-shot Zarr/netCDF level2 stores (local dir or fsspec URL, e.g. S3)
+backend: fairmast
+
+# Signals to load and display in the time-trace pane.
+# For the fairmast backend these are "<group>/<variable>" strings identifying a
+# diagnostic group and variable within the store (e.g. "thomson_scattering/t_e");
+# a name with no "/" is read from the store's root group.
+# Only scalar (time-only) variables are supported — e.g. pf_active/coil_current
+# is (channel, time) and would be skipped with a logged error.
+signals:
+  - summary/ip
+
+# Crop time traces to this window (seconds).
+# level2 shots are generally short (magnetics/ip on shot 11766 spans -0.1 to 0.35s);
+# adjust to match the shot range you're browsing.
+time_window:
+  min_time: 0.0
+  max_time: 1.0
+
+# UDA-specific section, timebase_hz is reused by the fairmast backend to
+# interpolate all signals onto a uniform time grid at this sample rate (Hz).
+# If omitted, the native time axis of the first successfully loaded signal is used.
+uda:
+  timebase_hz: 1000
+
+# fairmast-specific options.
+backend_options:
+  # Storage format of the per-shot files: zarr (default) | netcdf
+  format: zarr
+  # Passed through to fsspec / the xarray engine for remote stores.
+  # Example below is FAIR MAST's public S3-compatible endpoint (no credentials required).
+  storage_options:
+    anon: true
+    client_kwargs:
+      endpoint_url: https://s3.echo.stfc.ac.uk
+
+# Columns to use as features for the UMAP projection.
+# Defaults to all numeric columns (excluding 'shot') if not set.
+# Changing this list forces the UMAP cache to be recomputed.
+# Shots with NaN in any of these columns are excluded from the projection.
+#
+# umap_features:
+#   - pohm_max
+#   - ip_max
+
+reference_shot_col: reference__number

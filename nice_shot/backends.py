@@ -403,6 +403,143 @@ class SalTraceBackend(_RemoteTraceBackend):
         return f"sal://pulse/{shot_id}/{signal}"
 
 
+class _SuppressAsyncCleanupRaceFilter(logging.Filter):
+    """Silences a known benign zarr-v3/s3fs/aiobotocore async cleanup race.
+
+    zarr v3's Fsspec async store and s3fs each run their own background
+    event loop/thread. Closing an idle S3 session can occasionally race the
+    closing of the *other* loop's selector, raising a stray ValueError deep
+    inside aiohttp/aiobotocore transport teardown. asyncio logs this via its
+    default exception handler (logger 'asyncio') rather than raising it into
+    calling code, so it never affects data already returned — just noise.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        exc = record.exc_info[1] if record.exc_info else None
+        return not (isinstance(exc, ValueError) and "closed kqueue" in str(exc))
+
+
+logging.getLogger("asyncio").addFilter(_SuppressAsyncCleanupRaceFilter())
+
+
+class FairMastTraceBackend(TraceBackend):
+    """Loads per-shot time-series traces from FAIR MAST level2 data via xarray.
+
+    Supports local directories and any fsspec-addressable remote URL (e.g.
+    ``s3://...``), and both Zarr and netCDF-4 (via h5netcdf) formats.
+
+    Shot files are expected at ``<data_dir>/<shot_id>.<ext>`` where ``ext``
+    is ``zarr`` or ``nc`` depending on ``format`` below. Signals in
+    ``signals`` are ``"<group>/<variable>"`` strings (e.g.
+    ``"thomson_scattering/t_e"``); a bare name with no ``/`` is read from
+    the store's root group.
+
+    Only scalar (time-only) variables are supported — profile/multi-
+    dimensional variables (e.g. Thomson scattering channel profiles) are
+    skipped with a logged error, matching the tolerant per-signal failure
+    behaviour of the rest of this backend.
+
+    Optional options:
+      ``format``          — ``"zarr"`` (default) or ``"netcdf"``.
+      ``storage_options`` — dict passed through to fsspec/the xarray engine
+                             for remote stores, e.g. for FAIR MAST's public
+                             S3 endpoint:
+                             ``{"anon": true, "client_kwargs": {"endpoint_url": "https://s3.echo.stfc.ac.uk"}}``.
+                             Ignored for local paths.
+    """
+
+    _EXT = {"zarr": "zarr", "netcdf": "nc"}
+    _ENGINE = {"zarr": "zarr", "netcdf": "h5netcdf"}
+
+    def _format(self) -> str:
+        fmt = self.config.options.get("format", "zarr")
+        if fmt not in self._EXT:
+            raise ValueError(f"fairmast: unknown format '{fmt}', expected 'zarr' or 'netcdf'")
+        return fmt
+
+    def _storage_options(self) -> dict[str, Any]:
+        return self.config.options.get("storage_options", {})
+
+    def _shot_url(self, shot_id: int) -> str:
+        base = self.config.data_dir.rstrip("/")
+        return f"{base}/{int(shot_id)}.{self._EXT[self._format()]}"
+
+    @staticmethod
+    def _split_signal(signal: str) -> tuple[str | None, str]:
+        """Split 'group/variable' into (group, variable); bare names -> (None, name)."""
+        if "/" in signal:
+            group, _, var = signal.rpartition("/")
+            return (group or None), var
+        return None, signal
+
+    def is_available(self) -> bool:
+        try:
+            import fsspec
+
+            storage_options = self._storage_options()
+            fs, path = fsspec.core.url_to_fs(self.config.data_dir, **storage_options)
+            return fs.isdir(path) or fs.exists(path)
+        except ImportError:
+            log.warning('FAIR MAST backend requires optional dependencies: pip install "nice-shot[fairmast]"')
+            return False
+        except Exception as exc:
+            log.warning("FAIR MAST backend unavailable: %s", exc)
+            return False
+
+    def _open_group(self, url: str, group: str | None):
+        import xarray as xr
+
+        engine = self._ENGINE[self._format()]
+        storage_options = self._storage_options()
+        return xr.open_dataset(url, group=group, engine=engine, storage_options=storage_options or None)
+
+    def load(self, shot_id: int) -> pd.DataFrame | None:
+        cfg = self.config
+        url = self._shot_url(shot_id)
+        min_t, max_t = cfg.min_time, cfg.max_time
+
+        if cfg.timebase_hz is not None:
+            n = int(round((max_t - min_t) * cfg.timebase_hz))
+            time_ref: np.ndarray | None = np.linspace(min_t, max_t, n)
+        else:
+            time_ref = None
+
+        opened_groups: dict[str | None, Any] = {}
+        signal_data: dict[str, np.ndarray] = {}
+
+        for signal in cfg.signals:
+            group, var = self._split_signal(signal)
+            try:
+                if group not in opened_groups:
+                    opened_groups[group] = self._open_group(url, group)
+                ds = opened_groups[group]
+
+                if time_ref is None:
+                    time_ref = ds.coords["time"].values.astype(float)
+
+                da = ds[var].interp(time=time_ref)
+                if da.ndim != 1:
+                    raise ValueError(
+                        f"'{signal}' has shape {da.shape} (dims {da.dims}) — only scalar "
+                        f"(time-only) variables are supported"
+                    )
+                signal_data[signal] = da.values
+            except Exception as exc:
+                log.error("[fairmast] Could not load '%s' for shot %d: %s", signal, shot_id, exc)
+
+        for ds in opened_groups.values():
+            try:
+                ds.close()
+            except Exception:
+                pass
+
+        if time_ref is None:
+            return None
+
+        result = pd.DataFrame({"time": time_ref, **signal_data})
+        return result[(result["time"] >= min_t) & (result["time"] <= max_t)].reset_index(drop=True)
+
+
 class PostgresShotDataBackend(ShotDataBackend):
     """Loads shot statistics from a PostgreSQL table via DuckDB's postgres extension.
 
@@ -586,3 +723,4 @@ register_trace_backend("parquet", LocalParquetTraceBackend)
 register_trace_backend("uda", UdaTraceBackend)
 register_trace_backend("sal", SalTraceBackend)
 register_trace_backend("postgres", PostgresTraceBackend)
+register_trace_backend("fairmast", FairMastTraceBackend)

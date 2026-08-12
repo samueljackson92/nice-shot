@@ -7,7 +7,7 @@ NiceShot reads a YAML config file at startup (`nice_shot/config.yaml` by default
 ## `backend`
 
 ```yaml
-backend: parquet   # parquet | uda | sal | postgres
+backend: parquet   # parquet | uda | sal | postgres | fairmast
 ```
 
 Controls how per-shot time traces are loaded.
@@ -18,6 +18,7 @@ Controls how per-shot time traces are loaded.
 | `uda` | Fetches live data from UDA via `uda-xarray`. URL form: `uda://<signal>:<shot>`. Requires `uda-xarray` installed separately. |
 | `sal` | Fetches live data from SAL via `sal-xarray`. URL form: `sal://pulse/<shot>/<signal>`. Requires `sal-xarray` installed separately. |
 | `postgres` | Queries a PostgreSQL table via DuckDB's postgres extension. Requires `dsn` in `backend_options`. The time-trace panel is hidden if the database is unreachable at startup. |
+| `fairmast` | Reads per-shot Zarr or netCDF stores (local or remote, e.g. FAIR MAST's S3-hosted level2 data) via `xarray`. Requires `pip install "nice-shot[fairmast]"`. The time-trace panel is hidden if `--data-dir` is unreachable at startup. |
 
 ---
 
@@ -32,7 +33,7 @@ signals:
   - plasma_energy
 ```
 
-Signals shown in the time-trace panel. For the `parquet` backend these must match column names in the per-shot files. For `uda`/`sal` they are passed directly as signal names.
+Signals shown in the time-trace panel. For the `parquet` backend these must match column names in the per-shot files. For `uda`/`sal` they are passed directly as signal names. For `fairmast` they are `"<group>/<variable>"` strings identifying a diagnostic group and variable within the store (e.g. `thomson_scattering/t_e`); a name with no `/` is read from the store's root group.
 
 ---
 
@@ -143,6 +144,39 @@ Only relevant when `backend: postgres` or when using a `.pg` shot statistics fil
 | `shot_table` | path stem of `--shot-data` | Table to read for shot statistics (only when using a `.pg` shot data file). |
 
 The trace table must contain at least `shot_col`, `time_col`, and one column per signal listed under `signals`. Rows are filtered to the configured `time_window` and the matching `shot_col` value in the database query, so only relevant data is transferred.
+
+---
+
+## `fairmast` options
+
+```yaml
+backend: fairmast
+
+data_dir: s3://mast/level2/shots   # or a local directory of <shot_id>.zarr / .nc files
+
+signals:
+  - magnetics/ip
+  - summary/ip
+  - pf_active/coil_current
+
+backend_options:
+  format: zarr                          # optional — zarr (default) | netcdf
+  storage_options:                      # optional — passed to fsspec / the xarray engine
+    anon: true
+    client_kwargs:
+      endpoint_url: https://s3.echo.stfc.ac.uk
+```
+
+Loads per-shot Zarr or netCDF-4 stores via `xarray`, one file per shot at `<data_dir>/<shot_id>.zarr` (or `.nc`). `data_dir` may be a local directory or any URL understood by `fsspec` (e.g. `s3://...`). Requires the optional `fairmast` extra: `pip install "nice-shot[fairmast]"`.
+
+Signals are `"<group>/<variable>"` strings identifying a diagnostic group and variable within the store (e.g. `thomson_scattering/t_e`); a name with no `/` is read from the store's root group. **Only scalar (time-only) variables are supported** — multi-dimensional profile variables (e.g. Thomson scattering channel profiles, equilibrium 2-D fields) are skipped with a logged error rather than crashing the trace load.
+
+| Option | Default | Description |
+|--------|---------|--------------|
+| `format` | `zarr` | Storage format of the per-shot files: `zarr` or `netcdf`. |
+| `storage_options` | `{}` | Passed through to `fsspec`/the xarray engine for remote stores (credentials, custom S3 endpoint, etc). Ignored for local paths. |
+
+For FAIR MAST's public level2 data specifically, no credentials are required — only the custom endpoint shown above, since it is served from a non-AWS S3-compatible host.
 
 ---
 

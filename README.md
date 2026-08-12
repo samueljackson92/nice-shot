@@ -13,7 +13,7 @@ An interactive dashboard for exploring tokamak plasma shot data. Point it at a s
 - **Pairwise scatter** — any two numeric columns plotted against each other, with linear/log axis toggles.
 - **Correlation** — interactive Pearson correlation heatmap for any selection of numeric columns.
 - **Data table** — sortable, virtualized table with shot-ID search, cross-highlight with scatter plots, and CSV export.
-- **Time traces** — per-shot signal plots loaded on click. Supports local parquet/CSV files, live UDA, and live SAL backends.
+- **Time traces** — per-shot signal plots loaded on click. Supports local parquet/CSV files, live UDA, live SAL, and FAIR MAST (Zarr/netCDF, local or remote) backends.
 - **Filters** — up to 6 simultaneous column filters combinable with AND / OR logic. All plots update live.
 - **Clustering** — run K-Means, DBSCAN, or Agglomerative clustering on any set of numeric columns. Results colour the scatter plots immediately; clusters can be given human-readable class names.
 - **Cluster centroid traces** — mean time-series per cluster, computed automatically after clustering and relabelled live as class names change.
@@ -38,7 +38,8 @@ Python ≥ 3.12
 
 ```sh
 pip install nice-shot
-pip install "nice-shot[shap]"   # + SHAP plots, xarray, matplotlib
+pip install "nice-shot[shap]"       # + SHAP plots, xarray, matplotlib
+pip install "nice-shot[fairmast]"   # + FAIR MAST trace backend (Zarr/netCDF, local or remote)
 ```
 
 ---

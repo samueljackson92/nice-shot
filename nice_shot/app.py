@@ -1136,7 +1136,7 @@ app.layout = html.Div(
                                         dcc.Loading(
                                             type="circle",
                                             color=ACCENT,
-                                            target_components={"traces-plot": "figure"},
+                                            target_components={"traces-plot": "figure"},  # type: ignore
                                             children=dcc.Graph(
                                                 id="traces-plot",
                                                 figure=empty_traces_fig(),
