@@ -71,4 +71,3 @@ extra-paths = ["nice_shot"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
