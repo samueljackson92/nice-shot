@@ -32,6 +32,8 @@ shap = [
 [dependency-groups]
 dev = [
     "bump-my-version>=0.32.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
     "ruff>=0.11.0",
     "ty>=0.0.1a14",
     "zensical>=0.0.43",
@@ -66,3 +68,7 @@ select = ["E", "F", "I", "UP"]
 [tool.ty.environment]
 python-version = "3.11"
 extra-paths = ["nice_shot"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
