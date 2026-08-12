@@ -1133,21 +1133,26 @@ app.layout = html.Div(
                                         cursor="not-allowed",
                                     ),
                                     children=[
-                                        dcc.Graph(
-                                            id="traces-plot",
-                                            figure=empty_traces_fig(),
-                                            responsive=True,
-                                            config=dict(
-                                                displayModeBar=True,
-                                                displaylogo=False,
-                                                modeBarButtonsToRemove=[
-                                                    "select2d",
-                                                    "lasso2d",
-                                                ],
-                                            ),
-                                            style=dict(
-                                                height="calc(100vh - 430px)",
-                                                minHeight="220px",
+                                        dcc.Loading(
+                                            type="circle",
+                                            color=ACCENT,
+                                            target_components={"traces-plot": "figure"},
+                                            children=dcc.Graph(
+                                                id="traces-plot",
+                                                figure=empty_traces_fig(),
+                                                responsive=True,
+                                                config=dict(
+                                                    displayModeBar=True,
+                                                    displaylogo=False,
+                                                    modeBarButtonsToRemove=[
+                                                        "select2d",
+                                                        "lasso2d",
+                                                    ],
+                                                ),
+                                                style=dict(
+                                                    height="calc(100vh - 430px)",
+                                                    minHeight="220px",
+                                                ),
                                             ),
                                         )
                                         if SHOW_TRACES
@@ -3070,6 +3075,7 @@ if SHOW_TRACES:
     Output("cluster-status", "children"),
     Output("umap-color-col", "value"),
     Output("pair-color-col", "value"),
+    Output("cluster-traces-plot", "className", allow_duplicate=True),
     Input("run-cluster-btn", "n_clicks"),
     State("cluster-algorithm", "value"),
     State("cluster-features", "value"),
@@ -3081,15 +3087,19 @@ if SHOW_TRACES:
     prevent_initial_call=True,
 )
 def run_clustering(n_clicks, algorithm, features, n_clusters, eps, min_samples, use_projection, variable):
+    # The trailing "" output is a dummy write to a prop of the dcc.Loading-wrapped
+    # cluster-traces-plot: dcc.Loading only detects callbacks whose Output lands
+    # directly on one of its children, not further up a chained-callback graph, so
+    # this keeps the spinner showing for this (slow) first hop of that chain too.
     ds = get_dataset(variable)
     if ds is None:
-        return dash.no_update, dash.no_update, SELECT_VARIABLE_MSG, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, SELECT_VARIABLE_MSG, dash.no_update, dash.no_update, ""
     active_features = ["umap_x", "umap_y"] if use_projection else list(features or [])
     if not active_features:
-        return dash.no_update, dash.no_update, "Select at least one feature", dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, "Select at least one feature", dash.no_update, dash.no_update, ""
     eps_val = float(eps or 0.5)
     if eps_val <= 0:
-        return dash.no_update, dash.no_update, "eps must be greater than 0", dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, "eps must be greater than 0", dash.no_update, dash.no_update, ""
     try:
         labels, representatives = _run_clustering(
             ds.df,
@@ -3101,16 +3111,16 @@ def run_clustering(n_clicks, algorithm, features, n_clusters, eps, min_samples, 
         )
     except Exception as exc:
         log.error("[clustering] %s", exc)
-        return dash.no_update, dash.no_update, f"Error: {exc}", dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, f"Error: {exc}", dash.no_update, dash.no_update, ""
     if not labels:
-        return None, None, "No shots clustered — check features", dash.no_update, dash.no_update
+        return None, None, "No shots clustered — check features", dash.no_update, dash.no_update, ""
     unique = sorted(set(labels.values()))
     n_valid = sum(1 for v in unique if v >= 0)
     noise = sum(1 for v in labels.values() if v < 0)
     msg = f"{n_valid} cluster(s) across {len(labels):,} shots"
     if noise:
         msg += f" · {noise:,} noise"
-    return labels, representatives, msg, _CLUSTER_COLOR_VALUE, _CLUSTER_COLOR_VALUE
+    return labels, representatives, msg, _CLUSTER_COLOR_VALUE, _CLUSTER_COLOR_VALUE, ""
 
 
 @app.callback(
@@ -3175,14 +3185,15 @@ def update_cluster_names(name_values, cluster_labels):
 
 @app.callback(
     Output("centroid-data", "data"),
+    Output("cluster-traces-plot", "className", allow_duplicate=True),
     Input("cluster-representatives", "data"),
     Input("compute-centroid-btn", "n_clicks"),
     prevent_initial_call=True,
 )
 def compute_centroid_data(cluster_representatives, _btn):
     if not cluster_representatives:
-        return None
-    return _load_cluster_representative_traces(cluster_representatives)
+        return None, ""
+    return _load_cluster_representative_traces(cluster_representatives), ""
 
 
 @app.callback(
@@ -3283,6 +3294,7 @@ def toggle_outlier_features_row(use_proj):
     Output("outlier-status", "children"),
     Output("umap-color-col", "value", allow_duplicate=True),
     Output("pair-color-col", "value", allow_duplicate=True),
+    Output("outlier-traces-plot", "className", allow_duplicate=True),
     Input("run-outlier-btn", "n_clicks"),
     State("outlier-algorithm", "value"),
     State("outlier-features", "value"),
@@ -3293,12 +3305,16 @@ def toggle_outlier_features_row(use_proj):
     prevent_initial_call=True,
 )
 def run_outlier_detection(n_clicks, algorithm, features, contamination, n_neighbors, use_projection, variable):
+    # The trailing "" output is a dummy write to a prop of the dcc.Loading-wrapped
+    # outlier-traces-plot: dcc.Loading only detects callbacks whose Output lands
+    # directly on one of its children, not further up a chained-callback graph, so
+    # this keeps the spinner showing for this (slow) first hop of that chain too.
     ds = get_dataset(variable)
     if ds is None:
-        return dash.no_update, SELECT_VARIABLE_MSG, dash.no_update, dash.no_update
+        return dash.no_update, SELECT_VARIABLE_MSG, dash.no_update, dash.no_update, ""
     active_features = ["umap_x", "umap_y"] if use_projection else list(features or [])
     if not active_features:
-        return dash.no_update, "Select at least one feature", dash.no_update, dash.no_update
+        return dash.no_update, "Select at least one feature", dash.no_update, dash.no_update, ""
     try:
         labels = _run_outlier_detection(
             ds.df,
@@ -3309,22 +3325,23 @@ def run_outlier_detection(n_clicks, algorithm, features, contamination, n_neighb
         )
     except Exception as exc:
         log.error("[outliers] %s", exc)
-        return dash.no_update, f"Error: {exc}", dash.no_update, dash.no_update
+        return dash.no_update, f"Error: {exc}", dash.no_update, dash.no_update, ""
     if not labels:
-        return None, "No shots processed — check features", dash.no_update, dash.no_update
+        return None, "No shots processed — check features", dash.no_update, dash.no_update, ""
     n_out = sum(v for v in labels.values())
     pct = 100 * n_out / len(labels)
     msg = f"{n_out:,} outliers ({pct:.1f}%) across {len(labels):,} shots"
-    return labels, msg, _OUTLIER_COLOR_VALUE, _OUTLIER_COLOR_VALUE
+    return labels, msg, _OUTLIER_COLOR_VALUE, _OUTLIER_COLOR_VALUE, ""
 
 
 @app.callback(
     Output("outlier-traces-data", "data"),
+    Output("outlier-traces-plot", "className", allow_duplicate=True),
     Input("outlier-labels", "data"),
     prevent_initial_call=True,
 )
 def compute_outlier_traces(outlier_labels):
-    return _compute_outlier_traces_data(outlier_labels)
+    return _compute_outlier_traces_data(outlier_labels), ""
 
 
 @app.callback(
@@ -3423,6 +3440,7 @@ def populate_search_from_selection(selected_shot):
     Output("search-results", "data"),
     Output("search-status", "children"),
     Output("search-results-table", "data"),
+    Output("search-traces-plot", "className", allow_duplicate=True),
     Input("find-similar-btn", "n_clicks"),
     State("search-query-shot", "value"),
     State("search-k", "value"),
@@ -3431,11 +3449,15 @@ def populate_search_from_selection(selected_shot):
     prevent_initial_call=True,
 )
 def find_similar_shots(_n, query_shot_id, k, features, variable):
+    # The trailing "" output is a dummy write to a prop of the dcc.Loading-wrapped
+    # search-traces-plot: dcc.Loading only detects callbacks whose Output lands
+    # directly on one of its children, not further up a chained-callback graph, so
+    # this keeps the spinner showing for this (slow) first hop of that chain too.
     ds = get_dataset(variable)
     if ds is None:
-        return None, SELECT_VARIABLE_MSG, []
+        return None, SELECT_VARIABLE_MSG, [], ""
     if query_shot_id is None:
-        return None, "", []
+        return None, "", [], ""
 
     query_id = int(query_shot_id)
     k = int(k or 10)
@@ -3443,7 +3465,7 @@ def find_similar_shots(_n, query_shot_id, k, features, variable):
     # Find row in the search index
     idx = np.where(ds.search_ids == query_id)[0]
     if len(idx) == 0:
-        return None, f"Shot {query_id} not found in search index", []
+        return None, f"Shot {query_id} not found in search index", [], ""
 
     # If the user selected different features, rebuild a local index with imputation
     valid_features = [f for f in (features or ds.search_cols) if f in ds.df.columns]
@@ -3457,7 +3479,7 @@ def find_similar_shots(_n, query_shot_id, k, features, variable):
         local_nn = NearestNeighbors(metric="euclidean", algorithm="auto").fit(local_X)
         local_idx = np.where(local_ids == query_id)[0]
         if len(local_idx) == 0:
-            return None, f"Shot {query_id} not found in index", []
+            return None, f"Shot {query_id} not found in index", [], ""
         distances, indices = local_nn.kneighbors(local_X[local_idx], n_neighbors=min(k + 1, len(local_ids)))
         result_ids = [int(local_ids[i]) for i in indices[0] if int(local_ids[i]) != query_id][:k]
         result_scores = [float(d) for i, d in zip(indices[0], distances[0]) if int(local_ids[i]) != query_id][:k]
@@ -3471,7 +3493,7 @@ def find_similar_shots(_n, query_shot_id, k, features, variable):
         for rank, (sid, score) in enumerate(zip(result_ids, result_scores))
     ]
     status = f"{len(result_ids)} shots similar to shot {query_id}"
-    return result_ids, status, table_data
+    return result_ids, status, table_data, ""
 
 
 # ---------------------------------------------------------------------------
@@ -3481,11 +3503,12 @@ def find_similar_shots(_n, query_shot_id, k, features, variable):
 
 @app.callback(
     Output("search-traces-data", "data"),
+    Output("search-traces-plot", "className", allow_duplicate=True),
     Input("search-results", "data"),
     prevent_initial_call=True,
 )
 def compute_search_traces(search_results):
-    return _load_shots_traces(search_results or [])
+    return _load_shots_traces(search_results or []), ""
 
 
 @app.callback(

@@ -64,7 +64,7 @@ def test_download_table_produces_csv_payload(app_module):
 
 
 def test_run_clustering_callback_returns_labels_and_message(app_module):
-    labels, representatives, msg, umap_color, pair_color = app_module.run_clustering(
+    labels, representatives, msg, umap_color, pair_color, _classname = app_module.run_clustering(
         1,  # n_clicks
         "kmeans",  # algorithm
         ["feature_1", "feature_2"],  # features
@@ -85,14 +85,14 @@ def test_run_clustering_callback_returns_labels_and_message(app_module):
 
 
 def test_run_clustering_callback_no_features_selected(app_module):
-    labels, representatives, msg, umap_color, pair_color = app_module.run_clustering(
+    labels, representatives, msg, umap_color, pair_color, _classname = app_module.run_clustering(
         1, "kmeans", [], 2, 0.5, 5, False, None
     )
     assert msg == "Select at least one feature"
 
 
 def test_run_outlier_detection_callback_returns_labels_and_message(app_module):
-    labels, msg, umap_color, pair_color = app_module.run_outlier_detection(
+    labels, msg, umap_color, pair_color, _classname = app_module.run_outlier_detection(
         1,  # n_clicks
         "isoforest",  # algorithm
         ["feature_1", "feature_2"],  # features
