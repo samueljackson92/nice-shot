@@ -98,6 +98,22 @@ Omit (or set to `null`) for a normal flat, one-row-per-shot file.
 
 ---
 
+## `refresh_interval_seconds`
+
+```yaml
+refresh_interval_seconds: 30
+```
+
+Poll the shot data backend for new shots this often, in seconds, and merge any new ones into the running dashboard. Omit (or set to `null`, the default) to disable — the dashboard then only ever loads data at startup, as before. Must be positive if set.
+
+Polling is driven by a browser timer (Dash's `dcc.Interval`), so it only runs while a browser tab is open, and only refreshes whichever gunicorn worker happens to serve that tick's request. With `--workers 1` every request is served by the same process, so the dashboard converges immediately; with more workers, different open tabs (or different requests from the same tab) may briefly be served by workers that haven't polled yet, so the "latest shot" and point count can be momentarily inconsistent across requests until every worker has processed at least one tick. This is a transient, self-healing inconsistency, not persistent staleness — set `--workers 1` if strict consistency matters more than throughput.
+
+New shots are **transformed** onto the existing UMAP/PCA projection, never refit — existing points never move. See [`postgres options`](#postgres-options) / [`sql options`](#sql-options) for how backends fetch only the new rows efficiently; other backends fall back to reloading and diffing, which is fine for local files but wasteful for large remote backends polled frequently.
+
+Only additions are picked up this way — edits to an existing shot's feature values, or shots removed from the source, are not detected; restart the process (or clear the projection cache under `--umap-cache`) to pick those up.
+
+---
+
 ## `reference_shot_col`
 
 ```yaml
@@ -144,6 +160,22 @@ Only relevant when `backend: postgres` or when using a `.pg` shot statistics fil
 | `shot_table` | path stem of `SHOT_DATA` | Table to read for shot statistics (only when using a `.pg` shot data file). |
 
 The trace table must contain at least `shot_col`, `time_col`, and one column per signal listed under `signals`. Rows are filtered to the configured `time_window` and the matching `shot_col` value in the database query, so only relevant data is transferred.
+
+---
+
+## `sql` options
+
+```yaml
+backend_options:
+  url: "postgresql+psycopg://user:pass@host/db"   # optional for .sqlite/.db, required for .sql
+  shot_table: shots                                 # optional — defaults to the SHOT_DATA path stem
+  query: null                                       # optional — raw SELECT, overrides shot_table
+  shot_col: shot_id                                 # optional — defaults to shot_id
+```
+
+Only relevant when `SHOT_DATA` has a `.sqlite`, `.db`, or `.sql` extension — see [Data Formats](data-formats.md#shot-statistics-from-sql-sqlite-db-sql) for the full option reference. Unlike `postgres` above (DuckDB-based, PostgreSQL only), this backend works with any [SQLAlchemy](https://www.sqlalchemy.org/)-supported engine; sqlite needs no extra driver, other engines need their driver package installed separately.
+
+`shot_col` matters most when [`refresh_interval_seconds`](#refresh_interval_seconds) is set: it's the column the live-update poll filters on (`WHERE shot_col > last_known_shot_id`), pushed down into the database so each poll only transfers new rows rather than reloading the whole table.
 
 ---
 

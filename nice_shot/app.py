@@ -9,11 +9,13 @@ import importlib
 import logging
 import os
 import sys
+import tempfile
+import threading
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
 
 import dash
+import joblib
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -22,15 +24,17 @@ from dash import ALL, Input, Output, State, dash_table, dcc, html
 from plotly.subplots import make_subplots
 
 from nice_shot.analysis import (
+    ProjectionModel,
     _apply_cluster_color,
     _apply_filter_mask,
     _apply_outlier_color,
     _build_reference_graph,
-    _compute_projection,
     _extract_shot_id,
+    _fit_projection,
     _load_projection_file,
     _run_clustering,
     _run_outlier_detection,
+    _transform_projection,
     compute_active_filter_ids,
     get_reference_graph,
 )
@@ -198,6 +202,13 @@ def parse_args() -> argparse.Namespace:
         help="Importable plugin module paths to load at startup (overrides config.yaml: plugins)",
     )
     parser.add_argument(
+        "--refresh-interval-seconds",
+        type=float,
+        default=None,
+        help="Poll the backend for new shots this often, in seconds; omit to disable live "
+        "updates (overrides config.yaml: refresh_interval_seconds)",
+    )
+    parser.add_argument(
         "--backend-option",
         action="append",
         default=None,
@@ -236,6 +247,7 @@ VARIABLE_COLUMN: str | None = _cfg.variable_column
 UMAP_FEATURES: list[str] | None = _cfg.umap_features
 UMAP_EXCLUDE_FEATURES: list[str] = _cfg.umap_exclude_features
 REFERENCE_SHOT_COL: str | None = _cfg.reference_shot_col
+REFRESH_INTERVAL_SECONDS: float | None = _cfg.refresh_interval_seconds
 
 # ---------------------------------------------------------------------------
 # Backend initialisation
@@ -289,20 +301,25 @@ if not SHOW_TRACES:
 VARIABLES: list[str] = _variable_backend.variables(SHOT_DATA_PATH) if _variable_backend else []
 
 # ---------------------------------------------------------------------------
-# UMAP
+# UMAP / PCA projection — fitted once, then reused: new shots are transformed
+# onto the existing embedding (see _transform_projection) rather than refit.
+#
+# The on-disk cache key is config-only (features/method/variable) — NOT a hash
+# of the shot data file's bytes, so appending rows never invalidates the cache
+# or forces a refit. This is a one-time cache-format break from older versions:
+# the first run after upgrading always misses (no fitted model exists yet in the
+# old cache format) and pays exactly one full refit, which then persists a model
+# for every subsequent run/refresh to reuse.
 # ---------------------------------------------------------------------------
 
 
 def _umap_cache_hash(variable: str | None) -> str:
     h = hashlib.md5()
-    with open(SHOT_DATA_PATH, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
     features_key = ",".join(sorted(UMAP_FEATURES)) if UMAP_FEATURES else "__all__"
     h.update(features_key.encode())
     h.update((",".join(sorted(UMAP_EXCLUDE_FEATURES))).encode())
     h.update(PROJECTION_METHOD.encode())
-    h.update(b"impute:mean")  # invalidates caches from the old row-drop approach
+    h.update(b"modelversion:2")  # invalidates caches from before fitted-model persistence
     h.update((variable or "__all__").encode())
     return h.hexdigest()
 
@@ -316,34 +333,94 @@ def _umap_cache_path(variable: str | None) -> str:
     return f"{stem}.{safe}{ext}"
 
 
-def get_projection(data: pd.DataFrame, variable: str | None = None) -> tuple[np.ndarray, np.ndarray]:
-    """Return (projection, shot_ids), loading from cache when valid."""
+def _umap_model_path(variable: str | None) -> str:
+    return _umap_cache_path(variable) + ".model.joblib"
+
+
+def _atomic_save(path: str, save_fn) -> None:
+    """Write via a same-directory temp file + os.replace so a concurrent reader
+    (e.g. another gunicorn worker) never observes a partially-written file.
+    *save_fn* receives the temp path and must write the final bytes to it."""
+    directory = os.path.dirname(path) or "."
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=os.path.basename(path) + ".tmp")
+    os.close(fd)
+    try:
+        save_fn(tmp_path)
+        os.replace(tmp_path, path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+
+def _np_save_exact(path: str, arr: np.ndarray) -> None:
+    """np.save() but writing to exactly *path* (no auto-appended .npy suffix)."""
+    with open(path, "wb") as f:
+        np.save(f, arr)
+
+
+def _project_new_rows(model: ProjectionModel, new_rows: pd.DataFrame) -> pd.DataFrame:
+    """Transform *new_rows* onto *model* (never refits). Returns shot_id/umap_x/umap_y."""
+    coords, shot_ids = _transform_projection(model, new_rows)
+    return pd.DataFrame({"shot_id": shot_ids, "umap_x": coords[:, 0], "umap_y": coords[:, 1]})
+
+
+def get_projection_model(
+    data: pd.DataFrame, variable: str | None = None
+) -> tuple[ProjectionModel, np.ndarray, np.ndarray]:
+    """Return (model, projection, shot_ids) covering every shot_id in *data*.
+
+    Loads the fitted model + cached embedding when the config hash matches;
+    shots present in *data* but not yet in the cached embedding are transformed
+    (never refit) and merged in, and the extended embedding is re-saved so a
+    future process restart doesn't need to re-transform them either.
+    """
     cache_path = _umap_cache_path(variable)
-    _hash_path = cache_path + ".hash"
-    _shots_path = cache_path + ".shots.npy"
+    hash_path = cache_path + ".hash"
+    shots_path = cache_path + ".shots.npy"
+    model_path = _umap_model_path(variable)
     current_hash = _umap_cache_hash(variable)
 
-    if all(os.path.exists(p) for p in [cache_path, _hash_path, _shots_path]):
-        with open(_hash_path) as f:
-            if f.read().strip() == current_hash:
-                log.info("Loading projection from cache: %s", cache_path)
-                return np.load(cache_path), np.load(_shots_path)
-        log.info("Shot data or config changed — recomputing projection...")
+    cache_valid = all(os.path.exists(p) for p in [cache_path, hash_path, shots_path, model_path])
+    if cache_valid:
+        with open(hash_path) as f:
+            cache_valid = f.read().strip() == current_hash
+
+    if cache_valid:
+        log.info("Loading projection model from cache: %s", model_path)
+        model: ProjectionModel = joblib.load(model_path)
+        cached_projection = np.load(cache_path)
+        cached_shot_ids = np.load(shots_path)
     else:
         log.info(
-            "Computing %s projection (this may take a moment)...",
+            "Fitting %s projection (this may take a moment)...",
             PROJECTION_METHOD.upper(),
         )
+        model, cached_projection, cached_shot_ids = _fit_projection(
+            data, method=PROJECTION_METHOD, umap_features=UMAP_FEATURES, umap_exclude_features=UMAP_EXCLUDE_FEATURES
+        )
+        _atomic_save(model_path, lambda tmp: joblib.dump(model, tmp))
+        _atomic_save(cache_path, lambda tmp: _np_save_exact(tmp, cached_projection))
+        _atomic_save(shots_path, lambda tmp: _np_save_exact(tmp, cached_shot_ids.astype(np.int64)))
+        with open(hash_path, "w") as f:
+            f.write(current_hash)
+        log.info("Projection model saved to cache: %s", model_path)
 
-    projection, shot_ids = _compute_projection(
-        data, method=PROJECTION_METHOD, umap_features=UMAP_FEATURES, umap_exclude_features=UMAP_EXCLUDE_FEATURES
-    )
-    np.save(cache_path, projection)
-    np.save(_shots_path, shot_ids.astype(np.int64))
-    with open(_hash_path, "w") as f:
-        f.write(current_hash)
-    log.info("Projection saved to cache: %s", cache_path)
-    return projection, shot_ids
+    known_ids = set(int(s) for s in cached_shot_ids)
+    new_mask = ~data["shot_id"].astype(int).isin(known_ids)
+    new_rows = data[new_mask]
+    if new_rows.empty:
+        return model, cached_projection, cached_shot_ids
+
+    log.info("Transforming %d new shot(s) onto the existing projection...", len(new_rows))
+    new_emb = _project_new_rows(model, new_rows)
+    all_projection = np.concatenate([cached_projection, new_emb[["umap_x", "umap_y"]].values], axis=0)
+    all_shot_ids = np.concatenate([cached_shot_ids, new_emb["shot_id"].values.astype(np.int64)], axis=0)
+
+    _atomic_save(cache_path, lambda tmp: _np_save_exact(tmp, all_projection))
+    _atomic_save(shots_path, lambda tmp: _np_save_exact(tmp, all_shot_ids.astype(np.int64)))
+
+    return model, all_projection, all_shot_ids
 
 
 from sklearn.impute import SimpleImputer  # noqa: E402
@@ -374,35 +451,47 @@ class Dataset:
     ref_adjacency: dict[int, list[int]] = field(default_factory=dict)
     ref_parent: dict[int, int] = field(default_factory=dict)
     shap_idx: dict[int, int] = field(default_factory=dict)
+    # None exactly when --projection (a precomputed embedding file) is in use —
+    # there's no fitted transformer to reuse, so refresh_dataset() is a no-op then.
+    model: ProjectionModel | None = None
 
 
 def _numeric_cols_of(data: pd.DataFrame) -> list[str]:
     return sorted(c for c in data.select_dtypes(include=[np.number]).columns if c != "shot_id")
 
 
-def _build_dataset(data: pd.DataFrame, variable: str | None) -> Dataset:
-    """Project *data*, build the similarity index and the reference graph."""
-    # Positional index for SHAP lookup, taken before the projection merge drops rows.
-    # The .nc file uses 0-based indices matching the original sorted shot order.
-    shap_idx = {int(s): i for i, s in enumerate(data["shot_id"].values) if pd.notna(s)}
-    # Taken before the merge so the projection coordinates never become search features.
-    feature_cols = _numeric_cols_of(data)
-
+def _project_dataset(data: pd.DataFrame, variable: str | None) -> tuple[pd.DataFrame, str, str, ProjectionModel | None]:
+    """Merge 2D projection coordinates onto *data*. Returns (data, x_label, y_label, model)."""
     if PROJECTION_PATH is not None:
         emb, x_label, y_label = _load_projection_file(PROJECTION_PATH, data)
         data = data.merge(emb, on="shot_id", how="inner")
-    else:
-        projection, proj_shot_ids = get_projection(data, variable)
-        emb = pd.DataFrame(
-            {
-                "shot_id": proj_shot_ids,
-                "umap_x": projection[:, 0],
-                "umap_y": projection[:, 1],
-            }
-        )
-        data = data.merge(emb, on="shot_id", how="inner")
-        x_label, y_label = "Dim 1", "Dim 2"
+        return data, x_label, y_label, None
 
+    model, projection, proj_shot_ids = get_projection_model(data, variable)
+    emb = pd.DataFrame(
+        {
+            "shot_id": proj_shot_ids,
+            "umap_x": projection[:, 0],
+            "umap_y": projection[:, 1],
+        }
+    )
+    data = data.merge(emb, on="shot_id", how="inner")
+    return data, "Dim 1", "Dim 2", model
+
+
+def _finalize_dataset(
+    data: pd.DataFrame,
+    model: ProjectionModel | None,
+    x_label: str,
+    y_label: str,
+    shap_idx: dict[int, int],
+) -> Dataset:
+    """Build the similarity index and reference graph from an already-projected *data*.
+
+    Cheap enough to rerun on every refresh (unlike the projection fit itself) —
+    see :func:`refresh_dataset`.
+    """
+    feature_cols = _numeric_cols_of(data)
     search_cols = [f for f in (UMAP_FEATURES or feature_cols) if f in data.columns]
     search_raw = data[["shot_id"] + search_cols].copy()
     search_raw[search_cols] = search_raw[search_cols].replace([np.inf, -np.inf], np.nan)
@@ -438,16 +527,38 @@ def _build_dataset(data: pd.DataFrame, variable: str | None) -> Dataset:
         ref_adjacency=ref_adjacency,
         ref_parent=ref_parent,
         shap_idx=shap_idx,
+        model=model,
     )
 
 
-@lru_cache(maxsize=8)
+def _build_dataset(data: pd.DataFrame, variable: str | None) -> Dataset:
+    """Project *data*, build the similarity index and the reference graph."""
+    # Positional index for SHAP lookup, taken before the projection merge drops rows.
+    # The .nc file uses 0-based indices matching the original sorted shot order.
+    # Fixed at first build — refresh_dataset() carries it over unchanged, since it
+    # indexes into a static SHAP file that never grows with new shots.
+    shap_idx = {int(s): i for i, s in enumerate(data["shot_id"].values) if pd.notna(s)}
+    data, x_label, y_label, model = _project_dataset(data, variable)
+    return _finalize_dataset(data, model, x_label, y_label, shap_idx)
+
+
+_dataset_cache: dict[str | None, Dataset] = {}
+_dataset_cache_lock = threading.Lock()
+
+
 def get_dataset(variable: str | None) -> Dataset | None:
-    """Return the dataset for *variable*, loading and caching it on first use.
+    """Return the dataset for *variable*, building and caching it on first use.
 
     Returns ``None`` in long-format mode until the user picks a variable — that
     is the signal for callbacks to render their "select a variable" empty state.
+    Once built, a dataset stays cached until :func:`refresh_dataset` replaces it
+    (e.g. via the periodic poll callback) — it is never silently reloaded.
     """
+    with _dataset_cache_lock:
+        ds = _dataset_cache.get(variable)
+    if ds is not None:
+        return ds
+
     if _variable_backend is not None:
         if variable is None:
             return None
@@ -455,7 +566,63 @@ def get_dataset(variable: str | None) -> Dataset | None:
     else:
         assert _flat_backend is not None  # exactly one backend is created at startup
         data = _flat_backend.load(SHOT_DATA_PATH)
-    return _build_dataset(data, variable)
+    ds = _build_dataset(data, variable)
+
+    with _dataset_cache_lock:
+        _dataset_cache[variable] = ds
+    return ds
+
+
+def refresh_dataset(variable: str | None) -> int | None:
+    """Poll the backend for shots newer than the current dataset and merge them in.
+
+    Never refits the projection — new rows are transformed onto the existing
+    model (see :func:`_project_new_rows`). Returns the new max shot_id on
+    success, or ``None`` if there's nothing cached yet to refresh, no new rows
+    were found, or refresh isn't supported (``--projection`` mode has no fitted
+    model to reuse).
+    """
+    with _dataset_cache_lock:
+        ds = _dataset_cache.get(variable)
+    if ds is None or ds.df.empty:
+        return None
+    if ds.model is None:
+        log.warning("refresh_dataset: --projection mode has no fitted model; restart to pick up new data.")
+        return None
+
+    since_id = int(ds.df["shot_id"].max())
+    try:
+        if _variable_backend is not None:
+            # A cached Dataset only ever exists for a real variable in
+            # long-format mode (get_dataset(None) returns None without caching).
+            assert variable is not None
+            new_rows = _variable_backend.poll_new_variable(SHOT_DATA_PATH, variable, since_id)
+        else:
+            assert _flat_backend is not None
+            new_rows = _flat_backend.poll_new(SHOT_DATA_PATH, since_id)
+    except Exception:
+        log.exception("refresh_dataset: poll_new failed for variable=%r", variable)
+        return None
+
+    if new_rows is None or new_rows.empty:
+        return None
+
+    emb = _project_new_rows(ds.model, new_rows)
+    new_rows = new_rows.merge(emb, on="shot_id", how="inner")
+    combined = pd.concat([ds.df, new_rows], ignore_index=True)
+
+    new_ds = _finalize_dataset(combined, ds.model, ds.x_label, ds.y_label, ds.shap_idx)
+
+    cache_path = _umap_cache_path(variable)
+    all_projection = combined[["umap_x", "umap_y"]].values
+    all_shot_ids = combined["shot_id"].values.astype(np.int64)
+    _atomic_save(cache_path, lambda tmp: _np_save_exact(tmp, all_projection))
+    _atomic_save(cache_path + ".shots.npy", lambda tmp: _np_save_exact(tmp, all_shot_ids))
+
+    with _dataset_cache_lock:
+        _dataset_cache[variable] = new_ds
+    log.info("refresh_dataset: merged %d new shot(s), latest shot_id=%d", len(new_rows), int(all_shot_ids.max()))
+    return int(all_shot_ids.max())
 
 
 def _require_dataset(variable: str | None) -> Dataset:
@@ -1046,6 +1213,20 @@ app.layout = html.Div(
         # get_dataset(None) returns the single dataset.
         dcc.Store(id="selected-variable", data=None),
         dcc.Download(id="table-download"),
+        # Live-update: poll the backend for new shots at REFRESH_INTERVAL_SECONDS.
+        # Disabled (no-op) when unset — see nice_shot/config_schema.py.
+        dcc.Interval(
+            id="refresh-interval",
+            interval=int((REFRESH_INTERVAL_SECONDS or 3600) * 1000),
+            disabled=REFRESH_INTERVAL_SECONDS is None,
+        ),
+        # Bumped by poll_for_updates() after a successful refresh_dataset() call;
+        # render callbacks depend on it so they pick up new data without the user
+        # touching a filter.
+        dcc.Store(id="dataset-version", data=0),
+        # Max shot_id currently loaded — recomputed whenever the dataset changes.
+        dcc.Store(id="latest-shot", data=None),
+        dcc.Store(id="latest-shot-highlight-enabled", data=True),
         # Header
         html.Div(
             style=dict(
@@ -1164,6 +1345,21 @@ app.layout = html.Div(
                                 html.Button(
                                     "Similar shots: ON",
                                     id="search-highlight-btn",
+                                    n_clicks=0,
+                                    style=dict(
+                                        backgroundColor="#1a3a6a",
+                                        color=ACCENT,
+                                        border=f"1px solid {ACCENT}",
+                                        padding="4px 12px",
+                                        cursor="pointer",
+                                        borderRadius="4px",
+                                        fontSize="11px",
+                                        fontWeight="600",
+                                    ),
+                                ),
+                                html.Button(
+                                    "Latest shot: ON",
+                                    id="latest-shot-highlight-btn",
                                     n_clicks=0,
                                     style=dict(
                                         backgroundColor="#1a3a6a",
@@ -2609,6 +2805,43 @@ def _add_search_highlight(
     return fig
 
 
+_LATEST_SHOT_COLOR = "#2ecc71"
+
+
+def _add_latest_shot_highlight(
+    fig: go.Figure,
+    plot_df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    latest_shot,
+    enabled: bool,
+) -> go.Figure:
+    """Overlay a marker on the most-recently-added shot, updated as new shots arrive."""
+    if not enabled or latest_shot is None:
+        return fig
+    row = plot_df[plot_df["shot_id"] == latest_shot]
+    if row.empty:
+        return fig
+    fig.add_trace(
+        go.Scatter(
+            x=row[x_col],
+            y=row[y_col],
+            mode="markers",
+            marker=dict(
+                size=13,
+                color="rgba(0,0,0,0)",
+                line=dict(color=_LATEST_SHOT_COLOR, width=2.5),
+                symbol="diamond",
+            ),
+            customdata=row[["shot_id"]].values,
+            hovertemplate="latest shot: %{customdata[0]}<extra></extra>",
+            showlegend=False,
+            name="_latest",
+        )
+    )
+    return fig
+
+
 _SCATTER_LAYOUT = dict(
     paper_bgcolor=DARK_BG,
     plot_bgcolor="#16213e",
@@ -2652,8 +2885,9 @@ def _empty_fig(message: str) -> go.Figure:
     Input({"type": "filter-val", "index": ALL}, "value"),
     Input("filter-logic", "value"),
     Input("selected-variable", "data"),
+    Input("dataset-version", "data"),
 )
-def apply_filters(cols, ops, vals, logic, variable):
+def apply_filters(cols, ops, vals, logic, variable, _dataset_version):
     ds = get_dataset(variable)
     if ds is None:
         return None
@@ -2664,8 +2898,9 @@ def apply_filters(cols, ops, vals, logic, variable):
     Output("filter-count-display", "children"),
     Input("active-filters", "data"),
     Input("selected-variable", "data"),
+    Input("dataset-version", "data"),
 )
-def update_filter_count(active_filters, variable):
+def update_filter_count(active_filters, variable, _dataset_version):
     ds = get_dataset(variable)
     if ds is None or active_filters is None:
         return ""
@@ -2675,8 +2910,9 @@ def update_filter_count(active_filters, variable):
 @app.callback(
     Output("shot-count-display", "children"),
     Input("selected-variable", "data"),
+    Input("dataset-version", "data"),
 )
-def update_shot_count(variable):
+def update_shot_count(variable, _dataset_version):
     ds = get_dataset(variable)
     return "shots: —" if ds is None else f"shots: {len(ds.df):,}"
 
@@ -2778,6 +3014,71 @@ def toggle_search_highlight(n_clicks, currently_enabled):
 
 
 @app.callback(
+    Output("latest-shot-highlight-enabled", "data"),
+    Output("latest-shot-highlight-btn", "children"),
+    Output("latest-shot-highlight-btn", "style"),
+    Input("latest-shot-highlight-btn", "n_clicks"),
+    State("latest-shot-highlight-enabled", "data"),
+    prevent_initial_call=True,
+)
+def toggle_latest_shot_highlight(n_clicks, currently_enabled):
+    enabled = not currently_enabled
+    if enabled:
+        label = "Latest shot: ON"
+        style = dict(
+            backgroundColor="#1a3a6a",
+            color=ACCENT,
+            border=f"1px solid {ACCENT}",
+            padding="4px 12px",
+            cursor="pointer",
+            borderRadius="4px",
+            fontSize="11px",
+            fontWeight="600",
+        )
+    else:
+        label = "Latest shot: OFF"
+        style = dict(
+            backgroundColor="#2a2a4a",
+            color="#888",
+            border="1px solid #3a3a6a",
+            padding="4px 12px",
+            cursor="pointer",
+            borderRadius="4px",
+            fontSize="11px",
+        )
+    return enabled, label, style
+
+
+@app.callback(
+    Output("dataset-version", "data"),
+    Input("refresh-interval", "n_intervals"),
+    State("selected-variable", "data"),
+    State("dataset-version", "data"),
+    prevent_initial_call=True,
+)
+def poll_for_updates(n_intervals, variable, version):
+    """Periodic tick from the dcc.Interval — check the backend for new shots."""
+    latest = refresh_dataset(variable)
+    if latest is None:
+        return dash.no_update
+    return (version or 0) + 1
+
+
+@app.callback(
+    Output("latest-shot", "data"),
+    Input("dataset-version", "data"),
+    Input("selected-variable", "data"),
+)
+def update_latest_shot(_dataset_version, variable):
+    """Recomputed from whatever's currently loaded — fires on initial load too,
+    so the highlight is correct immediately, not just after the first poll."""
+    ds = get_dataset(variable)
+    if ds is None or ds.df.empty:
+        return None
+    return int(ds.df["shot_id"].max())
+
+
+@app.callback(
     Output("umap-plot", "figure"),
     Input("umap-color-col", "value"),
     Input("active-filters", "data"),
@@ -2788,7 +3089,10 @@ def toggle_search_highlight(n_clicks, currently_enabled):
     Input("outlier-labels", "data"),
     Input("search-results", "data"),
     Input("search-highlight-enabled", "data"),
+    Input("latest-shot", "data"),
+    Input("latest-shot-highlight-enabled", "data"),
     Input("selected-variable", "data"),
+    Input("dataset-version", "data"),
 )
 def update_umap(
     color_col,
@@ -2800,7 +3104,10 @@ def update_umap(
     outlier_labels,
     search_results,
     search_highlight_enabled,
+    latest_shot,
+    latest_shot_highlight_enabled,
     variable,
+    _dataset_version,
 ) -> go.Figure:
     ds = get_dataset(variable)
     if ds is None:
@@ -2839,6 +3146,7 @@ def update_umap(
         _add_reference_graph_overlay(fig, ds, plot_df, "umap_x", "umap_y", selected_shot)
     if search_highlight_enabled:
         _add_search_highlight(fig, plot_df, "umap_x", "umap_y", search_results)
+    _add_latest_shot_highlight(fig, plot_df, "umap_x", "umap_y", latest_shot, latest_shot_highlight_enabled)
     _add_selection_highlight(fig, plot_df, "umap_x", "umap_y", selected_shot)
     return fig
 
@@ -2858,7 +3166,10 @@ def update_umap(
     Input("outlier-labels", "data"),
     Input("search-results", "data"),
     Input("search-highlight-enabled", "data"),
+    Input("latest-shot", "data"),
+    Input("latest-shot-highlight-enabled", "data"),
     Input("selected-variable", "data"),
+    Input("dataset-version", "data"),
 )
 def update_pair_plot(
     x_col,
@@ -2874,7 +3185,10 @@ def update_pair_plot(
     outlier_labels,
     search_results,
     search_highlight_enabled,
+    latest_shot,
+    latest_shot_highlight_enabled,
     variable,
+    _dataset_version,
 ) -> go.Figure:
     ds = get_dataset(variable)
     if ds is None:
@@ -2920,6 +3234,7 @@ def update_pair_plot(
         _add_reference_graph_overlay(fig, ds, plot_df, x_col, y_col, selected_shot)
     if search_highlight_enabled:
         _add_search_highlight(fig, plot_df, x_col, y_col, search_results)
+    _add_latest_shot_highlight(fig, plot_df, x_col, y_col, latest_shot, latest_shot_highlight_enabled)
     _add_selection_highlight(fig, plot_df, x_col, y_col, selected_shot)
     return fig
 
@@ -2954,8 +3269,9 @@ def update_selected_shot(umap_click, pair_click, active_cell, variable, virtual_
     Output("shot-table", "data"),
     Input("shot-id-search", "value"),
     Input("selected-variable", "data"),
+    Input("dataset-version", "data"),
 )
-def filter_table_by_shot_id(search, variable):
+def filter_table_by_shot_id(search, variable, _dataset_version):
     ds = get_dataset(variable)
     if ds is None:
         return []
@@ -2969,18 +3285,29 @@ def filter_table_by_shot_id(search, variable):
 @app.callback(
     Output("shot-table", "style_data_conditional"),
     Input("selected-shot", "data"),
+    Input("latest-shot", "data"),
+    Input("latest-shot-highlight-enabled", "data"),
 )
-def highlight_table_row(selected_shot):
-    if selected_shot is None:
-        return []
-    return [
-        {
-            "if": {"filter_query": f"{{shot_id}} = {selected_shot}"},
-            "backgroundColor": "#2a3a6e",
-            "color": "white",
-            "fontWeight": "600",
-        }
-    ]
+def highlight_table_row(selected_shot, latest_shot, latest_shot_highlight_enabled):
+    styles = []
+    if latest_shot_highlight_enabled and latest_shot is not None:
+        styles.append(
+            {
+                "if": {"filter_query": f"{{shot_id}} = {latest_shot}"},
+                "backgroundColor": "#1e4a33",
+                "color": "white",
+            }
+        )
+    if selected_shot is not None:
+        styles.append(
+            {
+                "if": {"filter_query": f"{{shot_id}} = {selected_shot}"},
+                "backgroundColor": "#2a3a6e",
+                "color": "white",
+                "fontWeight": "600",
+            }
+        )
+    return styles
 
 
 app.clientside_callback(

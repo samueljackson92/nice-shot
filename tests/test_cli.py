@@ -36,6 +36,7 @@ def test_shot_data_only_leaves_config_flags_unset(app_module, monkeypatch):
         "reference_shot_col",
         "plugins",
         "backend_option",
+        "refresh_interval_seconds",
     ):
         assert getattr(args, attr) is None
 
@@ -75,6 +76,8 @@ def test_config_flags_round_trip(app_module, monkeypatch):
             "server=localhost:8080",
             "--backend-option",
             "tree=mast",
+            "--refresh-interval-seconds",
+            "15",
         ],
     )
     args = app_module.parse_args()
@@ -91,6 +94,7 @@ def test_config_flags_round_trip(app_module, monkeypatch):
     assert args.reference_shot_col == "reference__number"
     assert args.plugins == ["my_package.my_backends"]
     assert args.backend_option == ["server=localhost:8080", "tree=mast"]
+    assert args.refresh_interval_seconds == 15.0
 
 
 def test_projection_method_rejects_invalid_choice(app_module, monkeypatch):

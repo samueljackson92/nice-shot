@@ -10,6 +10,8 @@ opens a config file, or touches a Dash app.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -21,6 +23,28 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Projection (UMAP / PCA)
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class ProjectionModel:
+    """A fitted projection pipeline, kept around so new shots can be projected
+    with :func:`_transform_projection` instead of refitting on the whole dataset.
+
+    ``imputer_cols`` / ``scaler_cols`` record the *exact* column set and order
+    each fitted step expects — feature selection happens in two stages during
+    fitting (all-NaN columns dropped before imputation, zero/non-finite-variance
+    columns dropped after imputation but before scaling), so both must be
+    captured to replay the same column alignment on new data.
+    """
+
+    method: str
+    imputer_cols: list[str]
+    scaler_cols: list[str]
+    # Typed loosely (fitted sklearn/umap estimators, imported lazily in
+    # _fit_projection to keep this module importable without those heavy deps).
+    imputer: Any
+    scaler: Any
+    reducer: Any
 
 
 def _projection_feature_cols(
@@ -43,13 +67,18 @@ def _projection_feature_cols(
     return cols
 
 
-def _compute_projection(
+def _fit_projection(
     data: pd.DataFrame,
     method: str = "umap",
     umap_features: list[str] | None = None,
     umap_exclude_features: list[str] | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return (projection, shot_ids) using mean imputation for NaN/Inf values."""
+) -> tuple[ProjectionModel, np.ndarray, np.ndarray]:
+    """Fit imputer/scaler/reducer on *data* and return (model, projection, shot_ids).
+
+    Uses mean imputation for NaN/Inf values. The returned :class:`ProjectionModel`
+    can later be reused via :func:`_transform_projection` to project new shots
+    without refitting.
+    """
     from sklearn.impute import SimpleImputer
     from sklearn.preprocessing import StandardScaler
 
@@ -97,7 +126,9 @@ def _compute_projection(
         )
 
     # Impute remaining NaN with column means so all shots are included in the projection.
-    X_imputed = SimpleImputer(strategy="mean").fit_transform(X.values.astype(float))
+    imputer_cols = X.columns.tolist()
+    imputer = SimpleImputer(strategy="mean")
+    X_imputed = imputer.fit_transform(X.values.astype(float))
     X = pd.DataFrame(X_imputed, columns=X.columns, index=X.index)
     shot_ids = data["shot_id"].values
 
@@ -118,17 +149,63 @@ def _compute_projection(
         raise ValueError("No columns with finite variance remain after filtering. Check your feature data.")
 
     log.info("[%s] fitting on %d rows x %d columns", tag, X.shape[0], X.shape[1])
-    X_scaled = StandardScaler().fit_transform(X)
+    scaler_cols = X.columns.tolist()
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
 
     if method == "pca":
         from sklearn.decomposition import PCA
 
-        projection = PCA(n_components=2, random_state=42).fit_transform(X_scaled)
+        reducer = PCA(n_components=2, random_state=42)
     else:
         from umap import UMAP
 
-        projection = UMAP(n_components=2, random_state=42).fit_transform(X_scaled)
+        reducer = UMAP(n_components=2, random_state=42)
+    projection = reducer.fit_transform(X_scaled)
 
+    model = ProjectionModel(
+        method=method,
+        imputer_cols=imputer_cols,
+        scaler_cols=scaler_cols,
+        imputer=imputer,
+        scaler=scaler,
+        reducer=reducer,
+    )
+    return model, projection, shot_ids
+
+
+def _transform_projection(model: ProjectionModel, data: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """Project *data* onto an already-fitted :class:`ProjectionModel`.
+
+    Never calls ``.fit``/``.fit_transform`` — only ``.transform`` — so existing
+    points' coordinates are unaffected. Columns the model was fit on but that are
+    absent from *data* are treated as missing (imputed with the fit-time column
+    mean), rather than raising, so a shot missing one late-computed diagnostic can
+    still be projected.
+    """
+    X = data.reindex(columns=model.imputer_cols)
+    X = X.apply(pd.to_numeric, errors="coerce")
+    X = X.replace([np.inf, -np.inf], np.nan)
+    X_imputed = model.imputer.transform(X.values.astype(float))
+    X = pd.DataFrame(X_imputed, columns=pd.Index(model.imputer_cols), index=X.index)
+    X_scaled = model.scaler.transform(X[model.scaler_cols])
+    projection = model.reducer.transform(X_scaled)
+    shot_ids = data["shot_id"].values
+    return projection, shot_ids
+
+
+def _compute_projection(
+    data: pd.DataFrame,
+    method: str = "umap",
+    umap_features: list[str] | None = None,
+    umap_exclude_features: list[str] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (projection, shot_ids) using mean imputation for NaN/Inf values.
+
+    Thin wrapper around :func:`_fit_projection` for callers that don't need the
+    fitted model (e.g. existing tests, one-shot scripts).
+    """
+    _model, projection, shot_ids = _fit_projection(data, method, umap_features, umap_exclude_features)
     return projection, shot_ids
 
 

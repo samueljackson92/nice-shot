@@ -28,6 +28,7 @@ _NULL_CLI_ARGS = dict(
     reference_shot_col=None,
     plugins=None,
     backend_option=None,
+    refresh_interval_seconds=None,
 )
 
 
@@ -43,6 +44,22 @@ def test_defaults():
     assert cfg.projection_method == "umap"
     assert cfg.variable_column is None
     assert cfg.plugins == []
+    assert cfg.refresh_interval_seconds is None
+
+
+def test_refresh_interval_seconds_accepts_positive_value():
+    cfg = AppConfig.model_validate({"refresh_interval_seconds": 30.0})
+    assert cfg.refresh_interval_seconds == 30.0
+
+
+def test_refresh_interval_seconds_rejects_zero():
+    with pytest.raises(ValidationError, match="must be positive"):
+        AppConfig.model_validate({"refresh_interval_seconds": 0})
+
+
+def test_refresh_interval_seconds_rejects_negative():
+    with pytest.raises(ValidationError, match="must be positive"):
+        AppConfig.model_validate({"refresh_interval_seconds": -5})
 
 
 def test_time_window_valid_order():
@@ -121,6 +138,12 @@ def test_merge_cli_overrides_backend_option_merges_over_config_keys():
 def test_merge_cli_overrides_backend_option_rejects_malformed_entry():
     with pytest.raises(ValueError, match="KEY=VALUE"):
         merge_cli_overrides({}, _args(backend_option=["not-a-kv-pair"]))
+
+
+def test_merge_cli_overrides_refresh_interval_seconds():
+    raw = merge_cli_overrides({}, _args(refresh_interval_seconds=15.0))
+    cfg = AppConfig.model_validate(raw)
+    assert cfg.refresh_interval_seconds == 15.0
 
 
 def test_load_app_config_reads_file_and_merges(tmp_path):

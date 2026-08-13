@@ -36,6 +36,15 @@ class AppConfig(BaseModel):
     reference_shot_col: str | None = None
     plugins: list[str] = []
     backend_options: dict[str, Any] = {}
+    refresh_interval_seconds: float | None = None
+
+    @model_validator(mode="after")
+    def check_refresh_interval(self) -> AppConfig:
+        if self.refresh_interval_seconds is not None and self.refresh_interval_seconds <= 0:
+            raise ValueError(
+                f"refresh_interval_seconds ({self.refresh_interval_seconds}) must be positive, or null to disable"
+            )
+        return self
 
 
 # Dotted config path -> CLI namespace attribute, for every AppConfig field that
@@ -53,6 +62,7 @@ _CLI_CONFIG_FIELDS: list[tuple[tuple[str, ...], str]] = [
     (("umap_exclude_features",), "umap_exclude_features"),
     (("reference_shot_col",), "reference_shot_col"),
     (("plugins",), "plugins"),
+    (("refresh_interval_seconds",), "refresh_interval_seconds"),
 ]
 
 

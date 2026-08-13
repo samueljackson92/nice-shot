@@ -4,7 +4,7 @@
 
 ## Shot statistics file (`SHOT_DATA`)
 
-A flat table of per-shot summary statistics. Accepted formats: `.parquet`, `.csv`, `.pg` (PostgreSQL).
+A flat table of per-shot summary statistics. Accepted formats: `.parquet`, `.csv`, `.pg` (PostgreSQL), `.sqlite` / `.db` / `.sql` (any SQLAlchemy-supported database — see [below](#shot-statistics-from-sql-sqlite-db-sql)).
 
 **Required:** one column that identifies the shot. The following names are detected automatically (in order of preference):
 
@@ -63,6 +63,29 @@ The same shot-ID column detection and renaming rules apply as for CSV/Parquet so
 
 ---
 
+## Shot statistics from SQL (`.sqlite`, `.db`, `.sql`)
+
+Use a `.sqlite`, `.db`, or `.sql` file extension for `SHOT_DATA` to read shot statistics from any [SQLAlchemy](https://www.sqlalchemy.org/)-supported database via `SqlShotDataBackend`. This is more general than the `.pg` PostgreSQL backend above (any engine SQLAlchemy has a dialect for, not just PostgreSQL), with sqlite as the zero-config case:
+
+```yaml
+backend_options:
+  url: "postgresql+psycopg://user:pass@host/db"   # optional — see below for the default
+  shot_table: shots                                 # optional — defaults to the SHOT_DATA path stem
+  query: "SELECT * FROM shots WHERE campaign = 'MU03'"  # optional — overrides shot_table entirely
+  shot_col: shot_id                                 # optional — defaults to shot_id
+```
+
+| Option | Default | Description |
+|--------|---------|--------------|
+| `url` | `sqlite:///<SHOT_DATA path>` for `.sqlite`/`.db`; **required** for `.sql` | SQLAlchemy connection URL. sqlite needs no extra driver (uses Python's stdlib `sqlite3`); other engines need their driver package installed separately, e.g. `psycopg` for PostgreSQL or `pymysql` for MySQL. |
+| `shot_table` | path stem of `SHOT_DATA` | Table read via `SELECT * FROM shot_table`. |
+| `query` | _(none)_ | A raw `SELECT` to run instead of `shot_table` — use this for joins or other custom SQL. |
+| `shot_col` | `shot_id` | Column holding the shot ID in the **source** table, before it's renamed to `shot_id`. Used to push an "only rows newer than X" filter into the database for live updates (see [`refresh_interval_seconds`](configuration.md#refresh_interval_seconds)) — assumes shot IDs increase monotonically over time. |
+
+The same shot-ID column detection and renaming rules apply as for CSV/Parquet sources once `shot_col` has been applied.
+
+---
+
 ## Per-shot time trace files (`--data-dir`, parquet backend)
 
 Each shot lives in its own file under `--data-dir`:
@@ -115,3 +138,5 @@ A NetCDF file (`.nc`) containing a single `xarray.DataArray` with two named dime
 The array is opened with `xr.open_dataset` and accessed via the default variable key `__xarray_dataarray_variable__`.
 
 The shot-to-index mapping is built from the shot statistics file at load time, so `shot_id` values in the SHAP file must be a subset of those in `SHOT_DATA`.
+
+If [`refresh_interval_seconds`](configuration.md#refresh_interval_seconds) is set, shots that arrive after startup are **not** added to the SHAP mapping — the SHAP file is static and never re-read. The SHAP panel simply has no data for those shots until a restart.

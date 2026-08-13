@@ -124,6 +124,20 @@ class ShotDataBackend(ABC):
     def load(self, path: str) -> pd.DataFrame:
         """Load shot statistics from *path* and return a normalised DataFrame."""
 
+    def poll_new(self, path: str, since_shot_id: int) -> pd.DataFrame:
+        """Return only rows with ``shot_id > since_shot_id``.
+
+        Default implementation reloads everything via :meth:`load` and filters
+        client-side — correct but wasteful for large remote sources. Backends
+        that read from a live database should override this to push the filter
+        down into the query instead.
+
+        Assumes shot IDs increase monotonically over time (true for the
+        pulse/exp_number-style identifiers in :data:`SHOT_ID_CANDIDATES`).
+        """
+        df = self.load(path)
+        return df[df["shot_id"] > since_shot_id]
+
     # ------------------------------------------------------------------
     # Shared helpers available to all subclasses.
     # ------------------------------------------------------------------
@@ -210,6 +224,20 @@ class VariableShotDataBackend(ShotDataBackend):
     @abstractmethod
     def load_variable(self, path: str, variable: str) -> pd.DataFrame:
         """Load only the rows for *variable* and return a normalised DataFrame."""
+
+    def poll_new_variable(self, path: str, variable: str, since_shot_id: int) -> pd.DataFrame:
+        """Return only rows for *variable* with ``shot_id > since_shot_id``.
+
+        Named distinctly from :meth:`ShotDataBackend.poll_new` (rather than
+        overriding it) for the same reason :meth:`load_variable` doesn't override
+        :meth:`load` — the extra *variable* argument would violate the base
+        signature. Default implementation reloads the variable via
+        :meth:`load_variable` and filters client-side; override for push-down
+        filtering. See :meth:`ShotDataBackend.poll_new` for the monotonic-shot-id
+        assumption.
+        """
+        df = self.load_variable(path, variable)
+        return df[df["shot_id"] > since_shot_id]
 
     def load(self, path: str) -> pd.DataFrame:
         raise NotImplementedError(
@@ -572,6 +600,78 @@ class PostgresShotDataBackend(ShotDataBackend):
         return self._prepare(df)
 
 
+class SqlShotDataBackend(ShotDataBackend):
+    """Loads shot statistics from any SQLAlchemy-supported SQL database.
+
+    Options:
+      ``url``       — SQLAlchemy connection URL, e.g. ``postgresql+psycopg://user:pass@host/db``
+                      or ``mysql+pymysql://user:pass@host/db``. Defaults to
+                      ``sqlite:///<path>`` when *path* has a ``.sqlite``/``.db``
+                      extension (no extra driver needed — SQLAlchemy's sqlite
+                      dialect uses Python's stdlib ``sqlite3``). Required for a
+                      ``.sql`` path, since that extension implies no engine.
+      ``shot_table`` — table name (default: stem of *path*, e.g. ``shots`` from ``shots.sqlite``).
+      ``query``     — raw ``SELECT`` to run instead of ``SELECT * FROM shot_table``.
+      ``shot_col``  — column holding the shot ID in the source table (default: ``shot_id``).
+                      Used to push an "only rows newer than X" filter into the query
+                      in :meth:`poll_new` without an extra schema-probing query.
+
+    Per-engine drivers (e.g. ``psycopg`` for PostgreSQL, ``pymysql`` for MySQL) must
+    be installed separately — only sqlite (via the stdlib) works out of the box.
+    """
+
+    def _url(self, path: str) -> str:
+        url = self.config.options.get("url")
+        if url:
+            return url
+        ext = os.path.splitext(path)[1].lower()
+        if ext in (".sqlite", ".db"):
+            return f"sqlite:///{path}"
+        raise ValueError(
+            "SqlShotDataBackend requires 'url' in backend_options for a '.sql' shot data "
+            "path (no default engine can be inferred). Use a .sqlite/.db extension for "
+            "the zero-config sqlite case, or set 'url' explicitly."
+        )
+
+    def _table(self, path: str) -> str:
+        return self.config.options.get("shot_table", os.path.splitext(os.path.basename(path))[0])
+
+    def _base_query(self, path: str) -> str:
+        return self.config.options.get("query") or f"SELECT * FROM {self._table(path)}"
+
+    def _shot_col(self) -> str:
+        return self.config.options.get("shot_col", "shot_id")
+
+    def _rename_shot_col(self, df: pd.DataFrame) -> pd.DataFrame:
+        shot_col = self._shot_col()
+        if shot_col != "shot_id" and shot_col in df.columns:
+            df = df.rename(columns={shot_col: "shot_id"})
+        return df
+
+    def load(self, path: str) -> pd.DataFrame:
+        import sqlalchemy as sa
+
+        url = self._url(path)
+        log.info("Loading shot data via SQL (%s)...", url.split("://", 1)[0])
+        engine = sa.create_engine(url)
+        try:
+            df = pd.read_sql_query(sa.text(self._base_query(path)), engine)
+        finally:
+            engine.dispose()
+        return self._prepare(self._rename_shot_col(df))
+
+    def poll_new(self, path: str, since_shot_id: int) -> pd.DataFrame:
+        import sqlalchemy as sa
+
+        engine = sa.create_engine(self._url(path))
+        try:
+            sql = f"SELECT * FROM ({self._base_query(path)}) AS _niceshot_poll WHERE {self._shot_col()} > :since_id"
+            df = pd.read_sql_query(sa.text(sql), engine, params={"since_id": since_shot_id})
+        finally:
+            engine.dispose()
+        return self._prepare(self._rename_shot_col(df))
+
+
 class PostgresTraceBackend(TraceBackend):
     """Loads per-shot time-series traces from a PostgreSQL table via DuckDB.
 
@@ -720,6 +820,9 @@ register_shot_data_backend(".csv", CsvShotDataBackend)
 register_shot_data_backend(".parquet", ParquetShotDataBackend)
 register_shot_data_backend(".pq", ParquetShotDataBackend)
 register_shot_data_backend(".pg", PostgresShotDataBackend)
+register_shot_data_backend(".sqlite", SqlShotDataBackend)
+register_shot_data_backend(".db", SqlShotDataBackend)
+register_shot_data_backend(".sql", SqlShotDataBackend)
 register_variable_shot_data_backend(".parquet", LongParquetShotDataBackend)
 register_variable_shot_data_backend(".pq", LongParquetShotDataBackend)
 register_trace_backend("parquet", LocalParquetTraceBackend)

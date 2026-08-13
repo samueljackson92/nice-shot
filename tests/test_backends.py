@@ -66,6 +66,22 @@ class TestCsvAndParquetBackends:
         assert "shot_id" in result.columns
         assert len(result) == 16
 
+    def test_csv_poll_new_returns_only_newer_rows(self, tmp_csv_path):
+        # synthetic_shot_df's shot_id runs from 1000 to 1015 (see conftest.py).
+        backend = CsvShotDataBackend(BackendConfig())
+        result = backend.poll_new(tmp_csv_path, since_shot_id=1012)
+        assert set(result["shot_id"]) == {1013, 1014, 1015}
+
+    def test_parquet_poll_new_returns_only_newer_rows(self, tmp_parquet_path):
+        backend = ParquetShotDataBackend(BackendConfig())
+        result = backend.poll_new(tmp_parquet_path, since_shot_id=1012)
+        assert set(result["shot_id"]) == {1013, 1014, 1015}
+
+    def test_poll_new_returns_empty_when_nothing_newer(self, tmp_csv_path):
+        backend = CsvShotDataBackend(BackendConfig())
+        result = backend.poll_new(tmp_csv_path, since_shot_id=1015)
+        assert result.empty
+
 
 class TestLongParquetShotDataBackend:
     @pytest.fixture
