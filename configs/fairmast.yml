@@ -8,13 +8,14 @@
 #
 # Run with (FAIR MAST's public level2 S3 bucket, verified reachable with the
 # storage_options below — no credentials required):
-#   uv run python nice_shot/app.py --config configs/config_fairmast.yaml \
+#   uv run python nice_shot/app.py SHOT_DATA --config configs/config_fairmast.yaml \
 #       --data-dir s3://mast/level2/shots
+#
+# CLI usage: nice-shot SHOT_DATA [options]
+#   SHOT_DATA           Path to shot stats file, .csv or .parquet [required]
 #
 # CLI options (all have defaults):
 #   --config PATH       Path to this config file (default: nice_shot/config.yaml)
-#   --shot-data PATH    Path to shot stats file, .csv or .parquet
-#                       (default: outputs/shot_stats.parquet)
 #   --data-dir PATH     For the fairmast backend, a local directory or fsspec URL
 #                       (e.g. s3://...) holding one <shot_id>.zarr / .nc store per shot
 #                       (default: data/mastu/ — will NOT work for this backend, see above)

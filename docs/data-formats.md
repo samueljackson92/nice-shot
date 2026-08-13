@@ -2,7 +2,7 @@
 
 ---
 
-## Shot statistics file (`--shot-data`)
+## Shot statistics file (`SHOT_DATA`)
 
 A flat table of per-shot summary statistics. Accepted formats: `.parquet`, `.csv`, `.pg` (PostgreSQL).
 
@@ -50,12 +50,12 @@ Nothing is read from the file body until a variable is chosen. Each variable's p
 
 ## Shot statistics from PostgreSQL (`.pg`, postgres backend)
 
-Use a `.pg` file extension for `--shot-data` to read shot statistics directly from a PostgreSQL table via DuckDB's postgres extension. The file path stem is used as the default table name (e.g. `--shot-data shots.pg` reads from the `shots` table). Configure the connection and table via `backend_options` in config:
+Use a `.pg` file extension for `SHOT_DATA` to read shot statistics directly from a PostgreSQL table via DuckDB's postgres extension. The file path stem is used as the default table name (e.g. `nice-shot shots.pg` reads from the `shots` table). Configure the connection and table via `backend_options` in config:
 
 ```yaml
 backend_options:
   dsn: "postgresql://user:pass@host/db"
-  shot_table: shots     # optional — defaults to the --shot-data path stem
+  shot_table: shots     # optional — defaults to the SHOT_DATA path stem
   schema: public        # optional — defaults to public
 ```
 
@@ -114,4 +114,4 @@ A NetCDF file (`.nc`) containing a single `xarray.DataArray` with two named dime
 
 The array is opened with `xr.open_dataset` and accessed via the default variable key `__xarray_dataarray_variable__`.
 
-The shot-to-index mapping is built from the shot statistics file at load time, so `shot_id` values in the SHAP file must be a subset of those in `--shot-data`.
+The shot-to-index mapping is built from the shot statistics file at load time, so `shot_id` values in the SHAP file must be a subset of those in `SHOT_DATA`.

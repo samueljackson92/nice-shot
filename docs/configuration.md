@@ -141,7 +141,7 @@ Only relevant when `backend: postgres` or when using a `.pg` shot statistics fil
 | `schema` | `public` | PostgreSQL schema containing the table. |
 | `shot_col` | `shot_id` | Column used to filter rows by shot ID. |
 | `time_col` | `time` | Column used for the time axis; renamed to `time` in the returned data if different. |
-| `shot_table` | path stem of `--shot-data` | Table to read for shot statistics (only when using a `.pg` shot data file). |
+| `shot_table` | path stem of `SHOT_DATA` | Table to read for shot statistics (only when using a `.pg` shot data file). |
 
 The trace table must contain at least `shot_col`, `time_col`, and one column per signal listed under `signals`. Rows are filtered to the configured `time_window` and the matching `shot_col` value in the database query, so only relevant data is transferred.
 

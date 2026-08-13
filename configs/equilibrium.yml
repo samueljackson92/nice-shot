@@ -1,7 +1,7 @@
 # NiceShot configuration for long-format equilibrium statistics.
 #
 # Run with:
-#   nice-shot --shot-data shot_equilibrium.parquet --config configs/equilibrium.yml
+#   nice-shot shot_equilibrium.parquet --config configs/equilibrium.yml
 #
 # The input file holds one row per (shot, variable) pair — the same statistics
 # (mean, std, iqr, entropy, …) repeated for each equilibrium variable. Setting

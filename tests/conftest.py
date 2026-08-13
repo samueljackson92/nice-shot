@@ -92,10 +92,9 @@ def app_module(tmp_path_factory):
     old_argv = sys.argv
     sys.argv = [
         "niceshot",
+        str(shot_data_path),
         "--config",
         str(config_path),
-        "--shot-data",
-        str(shot_data_path),
         "--data-dir",
         str(data_dir),
         "--umap-cache",

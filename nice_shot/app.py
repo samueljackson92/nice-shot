@@ -18,7 +18,6 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import yaml
 from dash import ALL, Input, Output, State, dash_table, dcc, html
 from plotly.subplots import make_subplots
 
@@ -62,13 +61,18 @@ else:
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 sys.path.insert(0, _HERE)
-from config_schema import AppConfig  # noqa: E402
+from config_schema import load_app_config  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="niceshot",
         description="NiceShot! — interactive tokamak shot dashboard",
+    )
+    parser.add_argument(
+        "shot_data",
+        metavar="SHOT_DATA",
+        help="Path to shot data file (.parquet or .csv)",
     )
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8050, help="Port to listen on (default: 8050)")
@@ -89,12 +93,6 @@ def parse_args() -> argparse.Namespace:
         default=os.path.join(_HERE, "config.yaml"),
         metavar="PATH",
         help="Path to config YAML (default: nice_shot/config.yaml)",
-    )
-    parser.add_argument(
-        "--shot-data",
-        default=os.path.join(_ROOT, "outputs", "shot_stats.parquet"),
-        metavar="PATH",
-        help="Path to shot data file (.parquet or .csv)",
     )
     parser.add_argument(
         "--data-dir",
@@ -124,6 +122,89 @@ def parse_args() -> argparse.Namespace:
         help="Path to a SHAP values NetCDF file (.nc). "
         "If provided, a SHAP decision-plot tab is shown in the left pane.",
     )
+
+    # --- Options mirroring nice_shot/config.yaml (AppConfig) ---
+    # All default to None: that's the sentinel meaning "not passed on the CLI",
+    # so an omitted flag falls through to the config file's value, and an
+    # omitted config value falls through to AppConfig's own default. An
+    # explicit value here always overrides both. See config_schema.load_app_config.
+    parser.add_argument(
+        "--backend",
+        default=None,
+        help="Backend for loading per-shot time traces, e.g. parquet, uda, sal, or a "
+        "plugin-registered name (overrides config.yaml: backend)",
+    )
+    parser.add_argument(
+        "--signals",
+        nargs="+",
+        default=None,
+        metavar="SIGNAL",
+        help="Signals to load in the time-trace pane (overrides config.yaml: signals)",
+    )
+    parser.add_argument(
+        "--min-time",
+        type=float,
+        default=None,
+        help="Crop time traces to start at this time, seconds (overrides config.yaml: time_window.min_time)",
+    )
+    parser.add_argument(
+        "--max-time",
+        type=float,
+        default=None,
+        help="Crop time traces to end at this time, seconds (overrides config.yaml: time_window.max_time)",
+    )
+    parser.add_argument(
+        "--timebase-hz",
+        type=float,
+        default=None,
+        help="UDA backend: interpolate signals onto a uniform time grid at this rate "
+        "(overrides config.yaml: uda.timebase_hz)",
+    )
+    parser.add_argument(
+        "--projection-method",
+        default=None,
+        choices=["umap", "pca"],
+        help="Algorithm for the 2D projection (overrides config.yaml: projection_method)",
+    )
+    parser.add_argument(
+        "--variable-column",
+        default=None,
+        help="Column holding the variable name in long-format shot data (overrides config.yaml: variable_column)",
+    )
+    parser.add_argument(
+        "--umap-features",
+        nargs="+",
+        default=None,
+        metavar="COLUMN",
+        help="Columns to use as UMAP/PCA features (overrides config.yaml: umap_features)",
+    )
+    parser.add_argument(
+        "--umap-exclude-features",
+        nargs="+",
+        default=None,
+        metavar="COLUMN",
+        help="Columns to exclude from UMAP/PCA features (overrides config.yaml: umap_exclude_features)",
+    )
+    parser.add_argument(
+        "--reference-shot-col",
+        default=None,
+        help="Column holding each shot's reference/parent shot ID (overrides config.yaml: reference_shot_col)",
+    )
+    parser.add_argument(
+        "--plugins",
+        nargs="+",
+        default=None,
+        metavar="MODULE",
+        help="Importable plugin module paths to load at startup (overrides config.yaml: plugins)",
+    )
+    parser.add_argument(
+        "--backend-option",
+        action="append",
+        default=None,
+        metavar="KEY=VALUE",
+        help="Extra backend option, repeatable (merged into config.yaml: backend_options, overriding matching keys)",
+    )
+
     # parse_known_args so Dash's own reloader flags don't cause errors
     args, _ = parser.parse_known_args()
     return args
@@ -143,8 +224,7 @@ SHAP_PATH: str | None = _args.shap_data
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-with open(_args.config) as f:
-    _cfg = AppConfig.model_validate(yaml.safe_load(f) or {})
+_cfg = load_app_config(_args)
 
 BACKEND: str = _cfg.backend
 TIME_TRACE_SIGNALS: list[str] = _cfg.signals

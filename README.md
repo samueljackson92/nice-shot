@@ -46,24 +46,24 @@ pip install "nice-shot[shap]"       # + SHAP plots, xarray, matplotlib
 ## Run
 
 ```sh
-nice-shot --shot-data path/to/shot_stats.parquet
+nice-shot path/to/shot_stats.parquet
 ```
 
-Open **http://localhost:8050** in a browser.
+`SHOT_DATA` is the only required argument — everything else has a default. Open **http://localhost:8050** in a browser.
 
 By default `nice-shot` runs under **gunicorn** with 4 worker processes, which supports multiple concurrent users. On first run, UMAP/PCA is computed in the master process and cached; subsequent starts are instant.
 
 For local development with hot-reload use `--debug`:
 
 ```sh
-nice-shot --shot-data path/to/shot_stats.parquet --debug
+nice-shot path/to/shot_stats.parquet --debug
 ```
 
 ### Common flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--shot-data PATH` | `outputs/shot_stats.parquet` | Shot statistics file (`.csv` or `.parquet`) |
+| `SHOT_DATA` | — (required) | Shot statistics file (`.csv` or `.parquet`) |
 | `--config PATH` | `nice_shot/config.yaml` | YAML config file |
 | `--data-dir PATH` | `data/mastu/` | Directory of per-shot files (parquet backend) |
 | `--projection PATH` | — | Pre-computed 2-D embedding; skips UMAP/PCA entirely |
@@ -71,6 +71,27 @@ nice-shot --shot-data path/to/shot_stats.parquet --debug
 | `--workers N` | `4` | Gunicorn worker processes (ignored in `--debug` mode) |
 | `--port PORT` | `8050` | Port to listen on |
 | `--debug` | off | Use the single-process Flask dev server instead of gunicorn |
+
+### Config-backed flags
+
+Every option in `nice_shot/config.yaml` also has a CLI flag of the same name. An explicit CLI flag overrides the config file, which overrides the built-in default:
+
+| Flag | Config field |
+|------|--------------|
+| `--backend NAME` | `backend` |
+| `--signals SIGNAL [SIGNAL ...]` | `signals` |
+| `--min-time SECONDS` | `time_window.min_time` |
+| `--max-time SECONDS` | `time_window.max_time` |
+| `--timebase-hz HZ` | `uda.timebase_hz` |
+| `--projection-method {umap,pca}` | `projection_method` |
+| `--variable-column NAME` | `variable_column` |
+| `--umap-features COLUMN [COLUMN ...]` | `umap_features` |
+| `--umap-exclude-features COLUMN [COLUMN ...]` | `umap_exclude_features` |
+| `--reference-shot-col NAME` | `reference_shot_col` |
+| `--plugins MODULE [MODULE ...]` | `plugins` |
+| `--backend-option KEY=VALUE` (repeatable) | `backend_options` (merged per-key) |
+
+Run `nice-shot --help` for full descriptions.
 
 ---
 
@@ -100,11 +121,13 @@ umap_features:          # omit to use all numeric columns
 reference_shot_col: reference__number   # omit to hide the feature
 ```
 
+Any of these can be overridden for a single run with the matching CLI flag — see [Config-backed flags](#config-backed-flags) above.
+
 ---
 
 ## Data
 
-**Shot statistics file** (`--shot-data`) — a flat `.parquet` or `.csv` with one row per shot. The shot ID column is detected automatically (`shot_id`, `shot`, `pulse`, `number`, …).
+**Shot statistics file** (`SHOT_DATA`) — a flat `.parquet` or `.csv` with one row per shot. The shot ID column is detected automatically (`shot_id`, `shot`, `pulse`, `number`, …).
 
 **Per-shot traces** (`--data-dir`) — one `.parquet` or `.csv` per shot, laid out as:
 ```

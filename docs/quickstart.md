@@ -17,10 +17,10 @@ pip install "nice-shot[shap]"
 ## Run
 
 ```sh
-nice-shot --shot-data path/to/shot_stats.parquet
+nice-shot path/to/shot_stats.parquet
 ```
 
-Open `http://localhost:8050` in a browser.
+`SHOT_DATA` is the only required argument. Open `http://localhost:8050` in a browser.
 
 By default `nice-shot` starts a **gunicorn** server with 4 worker processes, suitable for multiple concurrent users. The first run computes and caches the UMAP/PCA projection in the master process before workers are forked; subsequent starts are instant.
 
@@ -31,7 +31,7 @@ By default `nice-shot` starts a **gunicorn** server with 4 worker processes, sui
 For local development with Dash hot-reload use `--debug`. This starts the single-process Flask dev server instead of gunicorn:
 
 ```sh
-nice-shot --shot-data path/to/shot_stats.parquet --debug
+nice-shot path/to/shot_stats.parquet --debug
 ```
 
 ---
@@ -41,7 +41,7 @@ nice-shot --shot-data path/to/shot_stats.parquet --debug
 If you have a single parquet file of shot statistics and nothing else:
 
 ```sh
-nice-shot --shot-data outputs/shot_stats.parquet
+nice-shot outputs/shot_stats.parquet
 ```
 
 The time-trace panel is hidden automatically when `--data-dir` does not exist or is empty.
@@ -63,8 +63,7 @@ data/mastu/
 Each file must have a `time` column and one column per signal. Then:
 
 ```sh
-nice-shot \
-  --shot-data outputs/shot_stats.parquet \
+nice-shot outputs/shot_stats.parquet \
   --data-dir data/mastu \
   --config configs/config_mastu.yml
 ```
@@ -76,8 +75,7 @@ nice-shot \
 Skip UMAP computation entirely by supplying your own 2-D embedding:
 
 ```sh
-nice-shot \
-  --shot-data outputs/shot_stats.parquet \
+nice-shot outputs/shot_stats.parquet \
   --projection outputs/my_embedding.parquet
 ```
 
@@ -150,8 +148,7 @@ The **Correlation** tab (right panel, next to Data Table) shows a Pearson correl
 ## With SHAP values
 
 ```sh
-nice-shot \
-  --shot-data outputs/shot_stats.parquet \
+nice-shot outputs/shot_stats.parquet \
   --shap-data outputs/shap_values.nc
 ```
 
@@ -231,7 +228,7 @@ register_shot_data_backend(".h5", HDF5ShotDataBackend)
 register_shot_data_backend(".hdf5", HDF5ShotDataBackend)
 ```
 
-The backend is selected automatically from the file extension of `--shot-data`.
+The backend is selected automatically from the file extension of `SHOT_DATA`.
 
 ### Plugin loading order
 
@@ -243,8 +240,8 @@ Plugins listed under `plugins:` are imported in order before the backends are in
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `SHOT_DATA` | — (required) | Shot statistics file (`.csv` or `.parquet`) |
 | `--config PATH` | `nice_shot/config.yaml` | Path to YAML config file |
-| `--shot-data PATH` | `outputs/shot_stats.parquet` | Shot statistics file (`.csv` or `.parquet`) |
 | `--data-dir PATH` | `data/mastu/` | Directory of per-shot files for the parquet backend |
 | `--projection PATH` | _(none)_ | Pre-computed 2-D embedding (skips UMAP/PCA) |
 | `--shap-data PATH` | _(none)_ | SHAP values NetCDF file |
@@ -253,6 +250,23 @@ Plugins listed under `plugins:` are imported in order before the backends are in
 | `--port PORT` | `8050` | Port |
 | `--workers N` | `4` | Gunicorn worker processes (production mode only) |
 | `--debug / --no-debug` | off | Use Flask dev server instead of gunicorn |
+
+Every field in `nice_shot/config.yaml` also has a matching CLI flag — an explicit CLI value overrides the config file, which overrides the built-in default:
+
+| Flag | Config field | Default |
+|------|--------------|---------|
+| `--backend NAME` | `backend` | `parquet` |
+| `--signals SIGNAL [SIGNAL ...]` | `signals` | `ip ne dalpha loopv plasma_energy` |
+| `--min-time SECONDS` | `time_window.min_time` | `0.0` |
+| `--max-time SECONDS` | `time_window.max_time` | `1.0` |
+| `--timebase-hz HZ` | `uda.timebase_hz` | _(none)_ |
+| `--projection-method {umap,pca}` | `projection_method` | `umap` |
+| `--variable-column NAME` | `variable_column` | _(none)_ |
+| `--umap-features COLUMN [COLUMN ...]` | `umap_features` | _(all numeric columns)_ |
+| `--umap-exclude-features COLUMN [COLUMN ...]` | `umap_exclude_features` | _(none)_ |
+| `--reference-shot-col NAME` | `reference_shot_col` | _(none)_ |
+| `--plugins MODULE [MODULE ...]` | `plugins` | _(none)_ |
+| `--backend-option KEY=VALUE` (repeatable) | `backend_options` | _(none)_ |
 
 ## Friea Installation
 

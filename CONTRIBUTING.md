@@ -13,7 +13,7 @@ uv sync --extra shap
 ## Running the app locally
 
 ```sh
-uv run nice-shot --shot-data path/to/shot_stats.parquet
+uv run nice-shot path/to/shot_stats.parquet
 ```
 
 Debug mode is on by default — Dash will hot-reload on Python file changes.

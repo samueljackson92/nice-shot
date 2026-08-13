@@ -1,10 +1,14 @@
 # NiceShot! configuration
-# Run with: uv run python nice_shot/app.py [options]
+# Run with: uv run python nice_shot/app.py SHOT_DATA [options]
 #
-# CLI options (all have defaults):
+# CLI usage:
+#   SHOT_DATA           Path to shot stats file, .csv or .parquet [required]
+#
+# CLI options (all have defaults). Every option below this file also has a
+# corresponding CLI flag (e.g. --signals, --min-time, --projection-method, ...);
+# an explicit CLI flag overrides this file, which overrides the built-in default.
+# Run `nice-shot --help` for the full list.
 #   --config PATH       Path to this config file (default: nice_shot/config.yaml)
-#   --shot-data PATH    Path to shot stats file, .csv or .parquet
-#                       (default: outputs/shot_stats.parquet)
 #   --data-dir PATH     Directory of per-shot parquet files for the parquet backend
 #                       (default: data/mastu/)
 #   --umap-cache PATH   Path to projection cache, created if missing

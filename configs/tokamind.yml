@@ -3,10 +3,11 @@
 #
 # Run with: uv run python nice_shot/app.py [options]
 #
+# CLI usage: nice-shot SHOT_DATA [options]
+#   SHOT_DATA              Path to shot stats file: .csv, .parquet, or .pg (PostgreSQL) [required]
+#
 # CLI options (all have defaults):
 #   --config PATH         Path to this config file (default: nice_shot/config.yaml)
-#   --shot-data PATH      Path to shot stats file: .csv, .parquet, or .pg (PostgreSQL)
-#                         (default: outputs/shot_stats.parquet)
 #   --data-dir PATH       Directory of per-shot parquet files (parquet backend only)
 #                         (default: data/mastu/)
 #   --projection PATH     Pre-computed 2-D embedding file (.npy, .csv, or .parquet)
@@ -297,12 +298,12 @@ reference_shot_col: reference__number
 # Backend options — arbitrary key/value pairs forwarded to the active
 # backend via BackendConfig.options. Keys depend on the chosen backend.
 #
-# PostgreSQL backend options (backend: postgres, or --shot-data *.pg):
+# PostgreSQL backend options (backend: postgres, or a SHOT_DATA arg ending in *.pg):
 #   dsn          – libpq connection string (required)
 #                  e.g. "postgresql://user:pass@host/db"
 #   trace_table  – table holding per-shot time-series rows (default: traces)
 #   shot_table   – table holding shot statistics, used with a .pg shot data
-#                  file; defaults to the path stem of --shot-data
+#                  file; defaults to the path stem of SHOT_DATA
 #   schema       – PostgreSQL schema for both tables (default: public)
 #   shot_col     – column used to filter trace rows by shot ID (default: shot_id)
 #   time_col     – column used as the time axis in the trace table (default: time)
