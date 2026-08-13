@@ -2163,7 +2163,19 @@ app.layout = html.Div(
                         dcc.Tabs(
                             id="tabs",
                             value="umap",
-                            style=dict(flex="1", minHeight="0"),
+                            parent_style=dict(
+                                display="flex",
+                                flexDirection="column",
+                                flex="1",
+                                minHeight="0",
+                            ),
+                            content_style=dict(
+                                flex="1",
+                                minHeight="0",
+                                overflow="auto",
+                                display="flex",
+                                flexDirection="column",
+                            ),
                             colors=dict(
                                 border=BORDER,
                                 primary=ACCENT,
