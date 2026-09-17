@@ -33,15 +33,28 @@ Example custom trace backend::
         def is_available(self) -> bool:
             return True   # or check connectivity / file existence
 
+        # Optional. Return the signals this backend can serve for one shot, to
+        # fill the dropdown on the Configuration tab. The default returns an
+        # empty list, which hides the list and leaves the names to the user.
+        def available_signals(self, shot_id: int) -> list[str]:
+            return ["ip", "ne"]
+
     register_trace_backend("my_backend", MyTraceBackend)
+
+The UI can change the signal list and the time window while the app runs. It
+does this with TraceBackend.with_overrides(), which copies the backend and its
+config. `load` always reads `self.config`, so a custom backend needs no change
+to support this. Do not keep per-request state on the backend instance: the app
+serves more than one browser, each with its own selection.
 """
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -307,6 +320,10 @@ class TraceBackend(ABC):
 
     :meth:`is_available` is called once at startup to decide whether the
     time-trace panel is shown in the UI.
+
+    :meth:`with_overrides` and :meth:`available_signals` are optional. Both
+    have working defaults, so a subclass only has to implement :meth:`load`
+    and :meth:`is_available`.
     """
 
     def __init__(self, config: BackendConfig) -> None:
@@ -319,6 +336,29 @@ class TraceBackend(ABC):
     @abstractmethod
     def is_available(self) -> bool:
         """Return ``True`` if this backend has data to serve."""
+
+    def with_overrides(self, **overrides: Any) -> TraceBackend:
+        """Return a copy of this backend with *overrides* applied to its config.
+
+        The copy keeps all other attributes. Use it to serve one request with a
+        different signal list or time window. Do not change the shared config
+        in place: the UI lets each browser select its own signals, and the app
+        serves requests on more than one thread.
+        """
+        if not overrides:
+            return self
+        clone = copy.copy(self)
+        clone.config = replace(self.config, **overrides)
+        return clone
+
+    def available_signals(self, shot_id: int) -> list[str]:
+        """Return the signal names this backend can serve for *shot_id*.
+
+        The default returns an empty list, which tells the UI that this backend
+        cannot list its signals. Remote backends that address a signal by name
+        only, such as UDA and SAL, keep this default.
+        """
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -340,10 +380,22 @@ class LocalParquetTraceBackend(TraceBackend):
         return os.path.isdir(d) and bool(os.listdir(d))
 
     def find_shot_file(self, shot_id: int) -> str | None:
-        """Return the path to the per-shot file, or ``None`` if not found."""
+        """Return the path to the per-shot file, or ``None`` if not found.
+
+        Looks in ``data_dir`` itself first, then in each of its subdirectories.
+        """
         data_dir = self.config.data_dir
+        exts = (".parquet", ".csv")
+
+        for ext in exts:
+            path = os.path.join(data_dir, f"{int(shot_id)}{ext}")
+            if os.path.exists(path):
+                return path
+
         for subdir in sorted(os.listdir(data_dir)):
-            for ext in (".parquet", ".csv"):
+            if not os.path.isdir(os.path.join(data_dir, subdir)):
+                continue
+            for ext in exts:
                 path = os.path.join(data_dir, subdir, f"{int(shot_id)}{ext}")
                 if os.path.exists(path):
                     return path
@@ -367,6 +419,27 @@ class LocalParquetTraceBackend(TraceBackend):
         result = con.execute(f"SELECT * FROM '{path}' WHERE time >= {min_t} AND time <= {max_t}").df()
         con.close()
         return result
+
+    def available_signals(self, shot_id: int) -> list[str]:
+        """Return the column names of the per-shot file, without the time axis."""
+        path = self.find_shot_file(shot_id)
+        if path is None:
+            return []
+        ext = os.path.splitext(path)[1].lower()
+        try:
+            if ext == ".csv":
+                columns = list(pd.read_csv(path, nrows=0).columns)
+            else:
+                import duckdb
+
+                con = duckdb.connect()
+                rows = con.execute(f"DESCRIBE SELECT * FROM '{path}'").fetchall()
+                con.close()
+                columns = [row[0] for row in rows]
+        except Exception as exc:
+            log.warning("Could not list signals for shot %d: %s", shot_id, exc)
+            return []
+        return [c for c in columns if c != "time"]
 
 
 class _RemoteTraceBackend(TraceBackend):
@@ -570,6 +643,34 @@ class FairMastTraceBackend(TraceBackend):
         result = pd.DataFrame({"time": time_ref, **signal_data})
         return result[(result["time"] >= min_t) & (result["time"] <= max_t)].reset_index(drop=True)
 
+    def available_signals(self, shot_id: int) -> list[str]:
+        """Walk the shot store and return every 1-D, time-only variable.
+
+        Names use the same ``"<group>/<variable>"`` form as the ``signals``
+        config key. Root-group variables have no prefix.
+        """
+        url = self._shot_url(shot_id)
+        try:
+            tree = self._open_tree(url)
+        except Exception as exc:
+            log.warning("[fairmast] Could not list signals for shot %d: %s", shot_id, exc)
+            return []
+
+        names: list[str] = []
+        try:
+            for path, node in tree.subtree_with_keys:
+                # The root node's key is "."; every other key is a relative path.
+                group = "" if str(path) in (".", "/") else str(path).strip("/")
+                for var, da in node.dataset.data_vars.items():
+                    if da.ndim == 1 and da.dims == ("time",):
+                        names.append(f"{group}/{var}" if group else str(var))
+        except Exception as exc:
+            log.warning("[fairmast] Could not list signals for shot %d: %s", shot_id, exc)
+            return []
+        finally:
+            tree.close()
+        return sorted(names)
+
 
 class PostgresShotDataBackend(ShotDataBackend):
     """Loads shot statistics from a PostgreSQL table via DuckDB's postgres extension.
@@ -730,6 +831,27 @@ class PostgresTraceBackend(TraceBackend):
         if time_col != "time":
             df = df.rename(columns={time_col: "time"})
         return df
+
+    def available_signals(self, shot_id: int) -> list[str]:
+        """Return the trace-table columns, without the shot and time columns."""
+        import duckdb
+
+        dsn = self.config.options["dsn"]
+        schema = self.config.options.get("schema", "public")
+        table = self.config.options.get("trace_table", "traces")
+        shot_col = self.config.options.get("shot_col", "shot_id")
+        time_col = self.config.options.get("time_col", "time")
+
+        try:
+            con = duckdb.connect()
+            con.execute("INSTALL postgres; LOAD postgres;")
+            con.execute(f"ATTACH '{dsn}' AS pg (TYPE POSTGRES, READ_ONLY)")
+            rows = con.execute(f"DESCRIBE SELECT * FROM pg.{schema}.{table} LIMIT 0").fetchall()
+            con.close()
+        except Exception as exc:
+            log.warning("Could not list signals: %s", exc)
+            return []
+        return [row[0] for row in rows if row[0] not in (shot_col, time_col, "time")]
 
 
 # ---------------------------------------------------------------------------

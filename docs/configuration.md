@@ -35,6 +35,8 @@ signals:
 
 Signals shown in the time-trace panel. For the `parquet` backend these must match column names in the per-shot files. For `uda`/`sal` they are passed directly as signal names. For `fairmast` they are `"<group>/<variable>"` strings identifying a diagnostic group and variable within the store (e.g. `thomson_scattering/t_e`); a name with no `/` is read from the store's root group.
 
+This value is the startup default. The **Configuration** tab changes the list while the app runs — see [Configuration tab](#configuration-tab).
+
 ---
 
 ## `time_window`
@@ -46,6 +48,8 @@ time_window:
 ```
 
 Crop time traces to this window (seconds). Applied to all backends. `min_time` must be less than `max_time`.
+
+This value is the startup default. The **Configuration** tab changes the window while the app runs — see [Configuration tab](#configuration-tab).
 
 ---
 
@@ -209,6 +213,37 @@ Signals are `"<group>/<variable>"` strings identifying a diagnostic group and va
 | `storage_options` | `{}` | Passed through to `fsspec`/the xarray engine for remote stores (credentials, custom S3 endpoint, etc). Ignored for local paths. |
 
 For FAIR MAST's public level2 data specifically, no credentials are required — only the custom endpoint shown above, since it is served from a non-AWS S3-compatible host.
+
+---
+
+## Configuration tab
+
+The **Configuration** tab in the right-hand pane changes the displayed signals and the time window while the app runs. You do not have to edit the config file and restart.
+
+The tab has these controls:
+
+| Control | Effect |
+|---------|--------|
+| **Signals** | Select the signals to show. Type a name to add one that the list does not have. |
+| **Discover signals** | Ask the backend which signals it holds for the selected shot, and put them in the list. Select a shot first. |
+| **min_time** / **max_time** | Crop the traces to this range, in seconds. |
+| **Apply** | Use the new values. The time-trace pane, the Cluster Traces pane, the Outlier Traces pane and the Search pane all redraw. |
+| **Reset to config file** | Put the signal list and the time window back to the values in the config file. |
+| **Active configuration** | Show the settings that only a restart can change, such as the backend and the file paths. |
+
+**Discover signals** works with the `parquet`, `fairmast` and `postgres` backends. The `uda` and `sal` backends address a signal by name only and cannot list what they hold, so the tab tells you to type the names.
+
+A signal that the selected shot does not have is not an error. The pane plots the signals that are present, and the title above it names the others.
+
+### What the tab does not change
+
+The config file is never written. The values apply to your browser only:
+
+- They stay in the browser (`sessionStorage`), so they survive a tab refresh but not a new session.
+- Two browsers can show different signals at the same time. The server keeps no per-user configuration.
+- A restart returns to the config file values.
+
+Use the config file, or the `--signals` command-line option, for a value you want at every start.
 
 ---
 

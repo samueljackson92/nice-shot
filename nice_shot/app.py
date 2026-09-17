@@ -13,6 +13,7 @@ import tempfile
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import dash
 import joblib
@@ -22,6 +23,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from dash import ALL, Input, Output, State, dash_table, dcc, html
 from plotly.subplots import make_subplots
+from pydantic import ValidationError
 
 from nice_shot.analysis import (
     ProjectionModel,
@@ -65,7 +67,7 @@ else:
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 sys.path.insert(0, _HERE)
-from config_schema import load_app_config  # noqa: E402
+from config_schema import TimeWindow, load_app_config  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -714,8 +716,44 @@ if SHAP_PATH is not None:
 # ---------------------------------------------------------------------------
 
 
-def load_shot_traces(shot_id: int) -> pd.DataFrame | None:
-    return _trace_backend.load(shot_id)
+def _effective_signals(signals: list[str] | None) -> list[str]:
+    """Return *signals*, or the signal list from the config file if it is empty.
+
+    The Configuration tab sends the live selection. A page that has not applied
+    one yet sends nothing, and then the config file applies as before.
+    """
+    return list(signals) if signals else list(TIME_TRACE_SIGNALS)
+
+
+def _effective_window(time_window: dict | None) -> tuple[float, float]:
+    """Return the live time window, or the window from the config file."""
+    if not time_window:
+        return MIN_TIME, MAX_TIME
+    return (
+        float(time_window.get("min_time", MIN_TIME)),
+        float(time_window.get("max_time", MAX_TIME)),
+    )
+
+
+def load_shot_traces(
+    shot_id: int,
+    signals: list[str] | None = None,
+    time_window: dict | None = None,
+) -> pd.DataFrame | None:
+    """Load the traces of one shot.
+
+    *signals* and *time_window* override the config file for this call only.
+    They come from the Configuration tab. The backend is copied, not changed,
+    so one browser's selection cannot affect another's.
+    """
+    overrides: dict[str, Any] = {}
+    if signals:
+        overrides["signals"] = list(signals)
+    if time_window:
+        min_time, max_time = _effective_window(time_window)
+        overrides["min_time"] = min_time
+        overrides["max_time"] = max_time
+    return _trace_backend.with_overrides(**overrides).load(shot_id)
 
 
 def empty_traces_fig(message: str = "Click a point to load shot traces") -> go.Figure:
@@ -733,8 +771,9 @@ def empty_traces_fig(message: str = "Click a point to load shot traces") -> go.F
     return fig
 
 
-def make_traces_fig(shot_df: pd.DataFrame) -> go.Figure:
-    available = [s for s in TIME_TRACE_SIGNALS if s in shot_df.columns]
+def make_traces_fig(shot_df: pd.DataFrame, signals: list[str] | None = None) -> go.Figure:
+    requested = _effective_signals(signals)
+    available = [s for s in requested if s in shot_df.columns]
     if not available:
         return empty_traces_fig("No recognisable signals in this shot file")
 
@@ -863,32 +902,38 @@ _CLUSTER_ALGORITHMS = [
 ]
 
 
-def _load_cluster_representative_traces(representatives: dict) -> dict | None:
+def _load_cluster_representative_traces(
+    representatives: dict,
+    signals: list[str] | None = None,
+    time_window: dict | None = None,
+) -> dict | None:
     """Load time traces for the real representative shot of each cluster.
     Returns {str(cluster_id): {col: [values]}} suitable for dcc.Store, or None on failure.
     """
     if not representatives or not SHOW_TRACES:
         return None
 
+    wanted = _effective_signals(signals)
     result: dict[str, dict] = {}
     for cid_str, shot_id in sorted(representatives.items(), key=lambda kv: int(kv[0])):
         try:
-            sdf = load_shot_traces(int(shot_id))
+            sdf = load_shot_traces(int(shot_id), signals, time_window)
         except Exception:
             continue
         if sdf is None or sdf.empty:
             continue
         entry: dict[str, list] = {"time": sdf["time"].tolist()}
-        for sig in TIME_TRACE_SIGNALS:
+        for sig in wanted:
             if sig in sdf.columns and sdf[sig].notna().any():
                 entry[sig] = sdf[sig].fillna(0).tolist()
         result[cid_str] = entry
     return result or None
 
 
-def _render_centroid_fig(centroid_data: dict, cluster_names: dict) -> go.Figure:
+def _render_centroid_fig(centroid_data: dict, cluster_names: dict, signals: list[str] | None = None) -> go.Figure:
     """Build a subplot figure from pre-computed centroid data (no I/O)."""
-    available = [s for s in TIME_TRACE_SIGNALS if any(s in cdf for cdf in centroid_data.values())]
+    requested = _effective_signals(signals)
+    available = [s for s in requested if any(s in cdf for cdf in centroid_data.values())]
     if not available:
         return empty_traces_fig("No matching signals in centroid data")
 
@@ -941,7 +986,12 @@ _OUTLIER_RED = "#ff4444"
 _INLIER_BLUE = "#4488cc"
 
 
-def _compute_outlier_traces_data(outlier_labels: dict, n_samples: int = 5) -> dict | None:
+def _compute_outlier_traces_data(
+    outlier_labels: dict,
+    n_samples: int = 5,
+    signals: list[str] | None = None,
+    time_window: dict | None = None,
+) -> dict | None:
     """Load time traces for up to n_samples outlier shots.
     Returns {str(shot_id): {col: [values]}} or None.
     """
@@ -950,14 +1000,15 @@ def _compute_outlier_traces_data(outlier_labels: dict, n_samples: int = 5) -> di
     outlier_ids = [int(k) for k, v in outlier_labels.items() if int(v) == 1]
     if not outlier_ids:
         return None
+    wanted = _effective_signals(signals)
     result: dict[str, dict] = {}
     for sid in outlier_ids[:n_samples]:
         try:
-            sdf = load_shot_traces(sid)
+            sdf = load_shot_traces(sid, signals, time_window)
             if sdf is None or sdf.empty:
                 continue
             entry: dict[str, list] = {"time": sdf["time"].tolist()}
-            for sig in TIME_TRACE_SIGNALS:
+            for sig in wanted:
                 if sig in sdf.columns:
                     entry[sig] = sdf[sig].tolist()
             result[str(sid)] = entry
@@ -966,20 +1017,26 @@ def _compute_outlier_traces_data(outlier_labels: dict, n_samples: int = 5) -> di
     return result or None
 
 
-def _load_shots_traces(shot_ids: list[int], n_samples: int = 10) -> dict | None:
+def _load_shots_traces(
+    shot_ids: list[int],
+    n_samples: int = 10,
+    signals: list[str] | None = None,
+    time_window: dict | None = None,
+) -> dict | None:
     """Load time traces for up to n_samples shots from a plain list of shot IDs.
     Returns {str(shot_id): {col: [values]}} or None.
     """
     if not shot_ids or not SHOW_TRACES:
         return None
+    wanted = _effective_signals(signals)
     result: dict[str, dict] = {}
     for sid in shot_ids[:n_samples]:
         try:
-            sdf = load_shot_traces(sid)
+            sdf = load_shot_traces(sid, signals, time_window)
             if sdf is None or sdf.empty:
                 continue
             entry: dict[str, list] = {"time": sdf["time"].tolist()}
-            for sig in TIME_TRACE_SIGNALS:
+            for sig in wanted:
                 if sig in sdf.columns:
                     entry[sig] = sdf[sig].tolist()
             result[str(sid)] = entry
@@ -988,9 +1045,10 @@ def _load_shots_traces(shot_ids: list[int], n_samples: int = 10) -> dict | None:
     return result or None
 
 
-def _render_outlier_traces_fig(outlier_traces_data: dict) -> go.Figure:
+def _render_outlier_traces_fig(outlier_traces_data: dict, signals: list[str] | None = None) -> go.Figure:
     """Overlay individual outlier shot traces in a subplot figure (no I/O)."""
-    available = [s for s in TIME_TRACE_SIGNALS if any(s in td for td in outlier_traces_data.values())]
+    requested = _effective_signals(signals)
+    available = [s for s in requested if any(s in td for td in outlier_traces_data.values())]
     if not available:
         return empty_traces_fig("No matching signals in outlier trace data")
 
@@ -1138,6 +1196,18 @@ DROPDOWN_STYLE = dict(
     fontSize="12px",
 )
 
+_BTN_STYLE = dict(
+    backgroundColor=ACCENT,
+    color="#000",
+    border="none",
+    padding="4px 12px",
+    cursor="pointer",
+    borderRadius="4px",
+    fontSize="11px",
+    fontWeight="600",
+)
+_BTN_STYLE_SECONDARY = dict(_BTN_STYLE, backgroundColor="#2a2a4a", color=TEXT)
+
 _CLUSTER_LABEL_STYLE = dict(fontSize="10px", color="#888", display="block", marginBottom="2px")
 _CLUSTER_INPUT_STYLE = dict(
     backgroundColor="#16213e",
@@ -1156,6 +1226,75 @@ def _cluster_param_block(label: str, control, block_id: str | None = None) -> ht
     if block_id:
         return html.Div(children, id=block_id)
     return html.Div(children)
+
+
+def _config_summary_table() -> html.Table:
+    """Build the read-only table of settings that only a restart can change."""
+    rows = [
+        ("config file", _args.config),
+        ("backend", BACKEND),
+        ("shot data", SHOT_DATA_PATH),
+        ("data dir", MASTU_DATA_DIR),
+        ("projection method", PROJECTION_METHOD),
+        ("projection cache", UMAP_CACHE_PATH),
+        ("pre-computed projection", PROJECTION_PATH),
+        ("SHAP data", SHAP_PATH),
+        ("variable column", VARIABLE_COLUMN),
+        ("reference shot column", REFERENCE_SHOT_COL),
+        ("UDA timebase (Hz)", UDA_TIMEBASE_HZ),
+        ("refresh interval (s)", REFRESH_INTERVAL_SECONDS),
+        ("plugins", ", ".join(_cfg.plugins) if _cfg.plugins else None),
+    ]
+    return html.Table(
+        style=dict(width="100%", maxWidth="720px", borderCollapse="collapse", fontSize="11px"),
+        children=[
+            html.Tr(
+                style=dict(
+                    borderBottom="1px solid #2a2a4a",
+                    backgroundColor="#16213e" if i % 2 == 0 else PANEL_BG,
+                ),
+                children=[
+                    html.Td(
+                        key,
+                        style=dict(
+                            color=ACCENT,
+                            padding="3px 8px",
+                            whiteSpace="nowrap",
+                            fontWeight="600",
+                            width="35%",
+                        ),
+                    ),
+                    html.Td(
+                        "—" if value is None else str(value),
+                        style=dict(
+                            color=TEXT if value is not None else "#555",
+                            padding="3px 8px",
+                            wordBreak="break-all",
+                        ),
+                    ),
+                ],
+            )
+            for i, (key, value) in enumerate(rows)
+        ],
+    )
+
+
+def _config_section(title: str, description: str, children: list) -> html.Div:
+    """Wrap one block of the Configuration tab in a titled panel."""
+    return html.Div(
+        style=dict(
+            border=BORDER,
+            borderRadius="6px",
+            padding="12px 14px",
+            marginBottom="14px",
+            backgroundColor=PANEL_BG,
+        ),
+        children=[
+            html.Div(title, style=dict(fontSize="13px", fontWeight="600", color=ACCENT, marginBottom="2px")),
+            html.Div(description, style=dict(fontSize="11px", color="#888", marginBottom="10px")),
+            *children,
+        ],
+    )
 
 
 # Scatter Graph height — fills viewport minus header + tab bar + controls + padding
@@ -1227,6 +1366,21 @@ app.layout = html.Div(
         # Max shot_id currently loaded — recomputed whenever the dataset changes.
         dcc.Store(id="latest-shot", data=None),
         dcc.Store(id="latest-shot-highlight-enabled", data=True),
+        # Live overrides from the Configuration tab. These are seeded from the
+        # config file, so a page that never opens that tab behaves as before.
+        #
+        # storage_type="session" (every other store here uses the default,
+        # "memory") keeps a selection across a tab refresh. The value stays in
+        # the browser: the server holds no per-user config, so two browsers can
+        # show different signals at the same time. See TraceBackend.with_overrides.
+        dcc.Store(id="cfg-signals", data=list(TIME_TRACE_SIGNALS), storage_type="session"),
+        dcc.Store(
+            id="cfg-time-window",
+            data={"min_time": MIN_TIME, "max_time": MAX_TIME},
+            storage_type="session",
+        ),
+        # Signals found on the backend by the "Discover signals" button.
+        dcc.Store(id="cfg-discovered-signals", data=None),
         # Header
         html.Div(
             style=dict(
@@ -1313,10 +1467,14 @@ app.layout = html.Div(
                                     style=dict(marginRight="16px"),
                                 ),
                                 html.Span(
-                                    f"time: {MIN_TIME}–{MAX_TIME} s",
+                                    id="active-time-display",
+                                    children=f"time: {MIN_TIME}–{MAX_TIME} s",
                                     style=dict(marginRight="16px"),
                                 ),
-                                html.Span(f"signals: {', '.join(TIME_TRACE_SIGNALS)}"),
+                                html.Span(
+                                    id="active-signals-display",
+                                    children=f"signals: {', '.join(TIME_TRACE_SIGNALS)}",
+                                ),
                             ],
                         ),
                         html.Div(
@@ -1787,16 +1945,7 @@ app.layout = html.Div(
                                                                     "Run clustering",
                                                                     id="run-cluster-btn",
                                                                     n_clicks=0,
-                                                                    style=dict(
-                                                                        backgroundColor=ACCENT,
-                                                                        color="#000",
-                                                                        border="none",
-                                                                        padding="4px 12px",
-                                                                        cursor="pointer",
-                                                                        borderRadius="4px",
-                                                                        fontSize="11px",
-                                                                        fontWeight="600",
-                                                                    ),
+                                                                    style=_BTN_STYLE,
                                                                 ),
                                                                 html.Span(
                                                                     id="cluster-status",
@@ -2740,6 +2889,128 @@ app.layout = html.Div(
                                         ),
                                     ],
                                 ),
+                                # -- Configuration tab --
+                                dcc.Tab(
+                                    label="Configuration",
+                                    value="config",
+                                    style=dict(color=TEXT, backgroundColor=PANEL_BG),
+                                    selected_style=dict(
+                                        color=ACCENT,
+                                        backgroundColor=DARK_BG,
+                                        borderTop=f"2px solid {ACCENT}",
+                                    ),
+                                    children=[
+                                        html.Div(
+                                            style=dict(padding="12px 4px", overflow="auto"),
+                                            children=[
+                                                _config_section(
+                                                    "Signals",
+                                                    "Select the signals to show in the time-trace pane. "
+                                                    "Type a name to add one that is not in the list.",
+                                                    [
+                                                        dcc.Dropdown(
+                                                            id="cfg-signal-select",
+                                                            options=[
+                                                                {"label": s, "value": s} for s in TIME_TRACE_SIGNALS
+                                                            ],
+                                                            value=list(TIME_TRACE_SIGNALS),
+                                                            multi=True,
+                                                            placeholder="Select or type signal names…",
+                                                            style=dict(DROPDOWN_STYLE, width="100%"),
+                                                        ),
+                                                        html.Div(
+                                                            style=dict(
+                                                                display="flex",
+                                                                alignItems="center",
+                                                                gap="10px",
+                                                                marginTop="10px",
+                                                            ),
+                                                            children=[
+                                                                html.Button(
+                                                                    "Discover signals",
+                                                                    id="cfg-discover-btn",
+                                                                    n_clicks=0,
+                                                                    style=_BTN_STYLE_SECONDARY,
+                                                                ),
+                                                                html.Span(
+                                                                    id="cfg-discover-status",
+                                                                    style=dict(fontSize="11px", color="#888"),
+                                                                ),
+                                                            ],
+                                                        ),
+                                                    ],
+                                                ),
+                                                # The two inputs below use no debounce: Apply reads
+                                                # them as State, and a blur-on-click could otherwise
+                                                # lose the last edit.
+                                                _config_section(
+                                                    "Time window",
+                                                    "Crop the time traces to this range, in seconds.",
+                                                    [
+                                                        html.Div(
+                                                            style=dict(
+                                                                display="flex", alignItems="flex-end", gap="16px"
+                                                            ),
+                                                            children=[
+                                                                _cluster_param_block(
+                                                                    "min_time (s)",
+                                                                    dcc.Input(
+                                                                        id="cfg-min-time",
+                                                                        type="number",
+                                                                        value=MIN_TIME,
+                                                                        style=_CLUSTER_INPUT_STYLE,
+                                                                    ),
+                                                                ),
+                                                                _cluster_param_block(
+                                                                    "max_time (s)",
+                                                                    dcc.Input(
+                                                                        id="cfg-max-time",
+                                                                        type="number",
+                                                                        value=MAX_TIME,
+                                                                        style=_CLUSTER_INPUT_STYLE,
+                                                                    ),
+                                                                ),
+                                                            ],
+                                                        ),
+                                                    ],
+                                                ),
+                                                html.Div(
+                                                    style=dict(
+                                                        display="flex",
+                                                        alignItems="center",
+                                                        gap="10px",
+                                                        marginBottom="16px",
+                                                        flexWrap="wrap",
+                                                    ),
+                                                    children=[
+                                                        html.Button(
+                                                            "Apply",
+                                                            id="cfg-apply-btn",
+                                                            n_clicks=0,
+                                                            style=_BTN_STYLE,
+                                                        ),
+                                                        html.Button(
+                                                            "Reset to config file",
+                                                            id="cfg-reset-btn",
+                                                            n_clicks=0,
+                                                            style=_BTN_STYLE_SECONDARY,
+                                                        ),
+                                                        html.Span(
+                                                            id="cfg-status",
+                                                            style=dict(fontSize="11px", color="#888"),
+                                                        ),
+                                                    ],
+                                                ),
+                                                _config_section(
+                                                    "Active configuration",
+                                                    "These settings come from the config file and the command line. "
+                                                    "Restart the app to change them.",
+                                                    [_config_summary_table()],
+                                                ),
+                                            ],
+                                        ),
+                                    ],
+                                ),
                             ],
                         ),
                     ],
@@ -3443,19 +3714,27 @@ if SHOW_TRACES:
         Output("traces-plot", "figure"),
         Output("traces-title", "children"),
         Input("selected-shot", "data"),
+        Input("cfg-signals", "data"),
+        Input("cfg-time-window", "data"),
         prevent_initial_call=True,
     )
-    def update_traces(shot_id):
+    def update_traces(shot_id, cfg_signals, cfg_time_window):
         if shot_id is None:
             return dash.no_update, dash.no_update
         try:
-            shot_df = load_shot_traces(shot_id)
+            shot_df = load_shot_traces(shot_id, cfg_signals, cfg_time_window)
         except Exception as exc:
             log.error("[update_traces] error loading shot %d: %s", shot_id, exc)
             return empty_traces_fig(f"Error loading shot {shot_id}"), f"Shot {shot_id} — error"
         if shot_df is None:
             return empty_traces_fig(f"No data found for shot {shot_id}"), f"Shot {shot_id} — not found"
-        return make_traces_fig(shot_df), f"Shot {shot_id}"
+
+        # Name the selected signals this shot does not have, so a typo is visible.
+        missing = [s for s in _effective_signals(cfg_signals) if s not in shot_df.columns]
+        title = f"Shot {shot_id}"
+        if missing:
+            title += f" — no data for: {', '.join(missing)}"
+        return make_traces_fig(shot_df, cfg_signals), title
 
     if SHOW_SHAP:
 
@@ -3607,12 +3886,14 @@ def update_cluster_names(name_values, cluster_labels):
     Output("cluster-traces-plot", "className", allow_duplicate=True),
     Input("cluster-representatives", "data"),
     Input("compute-centroid-btn", "n_clicks"),
+    Input("cfg-signals", "data"),
+    Input("cfg-time-window", "data"),
     prevent_initial_call=True,
 )
-def compute_centroid_data(cluster_representatives, _btn):
+def compute_centroid_data(cluster_representatives, _btn, cfg_signals, cfg_time_window):
     if not cluster_representatives:
         return None, ""
-    return _load_cluster_representative_traces(cluster_representatives), ""
+    return _load_cluster_representative_traces(cluster_representatives, cfg_signals, cfg_time_window), ""
 
 
 @app.callback(
@@ -3620,13 +3901,14 @@ def compute_centroid_data(cluster_representatives, _btn):
     Output("centroid-status", "children"),
     Input("centroid-data", "data"),
     Input("cluster-names", "data"),
+    Input("cfg-signals", "data"),
 )
-def render_centroid_fig(centroid_data, cluster_names):
+def render_centroid_fig(centroid_data, cluster_names, cfg_signals):
     if not centroid_data:
         if not SHOW_TRACES:
             return empty_traces_fig("No data directory — pass --data-dir to enable time traces"), ""
         return empty_traces_fig("Run clustering to compute centroid traces"), ""
-    fig = _render_centroid_fig(centroid_data, cluster_names or {})
+    fig = _render_centroid_fig(centroid_data, cluster_names or {}, cfg_signals)
     n = len(centroid_data)
     return fig, f"Centroid traces · {n} cluster(s)"
 
@@ -3757,18 +4039,21 @@ def run_outlier_detection(n_clicks, algorithm, features, contamination, n_neighb
     Output("outlier-traces-data", "data"),
     Output("outlier-traces-plot", "className", allow_duplicate=True),
     Input("outlier-labels", "data"),
+    Input("cfg-signals", "data"),
+    Input("cfg-time-window", "data"),
     prevent_initial_call=True,
 )
-def compute_outlier_traces(outlier_labels):
-    return _compute_outlier_traces_data(outlier_labels), ""
+def compute_outlier_traces(outlier_labels, cfg_signals, cfg_time_window):
+    return _compute_outlier_traces_data(outlier_labels, signals=cfg_signals, time_window=cfg_time_window), ""
 
 
 @app.callback(
     Output("outlier-traces-plot", "figure"),
     Output("outlier-traces-status", "children"),
     Input("outlier-traces-data", "data"),
+    Input("cfg-signals", "data"),
 )
-def render_outlier_traces(outlier_traces_data):
+def render_outlier_traces(outlier_traces_data, cfg_signals):
     if not outlier_traces_data:
         if not SHOW_TRACES:
             return (
@@ -3776,7 +4061,7 @@ def render_outlier_traces(outlier_traces_data):
                 "",
             )
         return empty_traces_fig("Run outlier detection to load sample traces"), ""
-    fig = _render_outlier_traces_fig(outlier_traces_data)
+    fig = _render_outlier_traces_fig(outlier_traces_data, cfg_signals)
     n = len(outlier_traces_data)
     return fig, f"Showing {n} outlier sample(s)"
 
@@ -3924,18 +4209,21 @@ def find_similar_shots(_n, query_shot_id, k, features, variable):
     Output("search-traces-data", "data"),
     Output("search-traces-plot", "className", allow_duplicate=True),
     Input("search-results", "data"),
+    Input("cfg-signals", "data"),
+    Input("cfg-time-window", "data"),
     prevent_initial_call=True,
 )
-def compute_search_traces(search_results):
-    return _load_shots_traces(search_results or []), ""
+def compute_search_traces(search_results, cfg_signals, cfg_time_window):
+    return _load_shots_traces(search_results or [], signals=cfg_signals, time_window=cfg_time_window), ""
 
 
 @app.callback(
     Output("search-traces-plot", "figure"),
     Output("search-traces-status", "children"),
     Input("search-traces-data", "data"),
+    Input("cfg-signals", "data"),
 )
-def render_search_traces(search_traces_data):
+def render_search_traces(search_traces_data, cfg_signals):
     if not search_traces_data:
         if not SHOW_TRACES:
             return (
@@ -3943,8 +4231,122 @@ def render_search_traces(search_traces_data):
                 "",
             )
         return empty_traces_fig("Select a shot to load similar traces"), ""
-    fig = _render_outlier_traces_fig(search_traces_data)
+    fig = _render_outlier_traces_fig(search_traces_data, cfg_signals)
     return fig, f"Traces for {len(search_traces_data)} similar shot(s)"
+
+
+# ---------------------------------------------------------------------------
+# Configuration tab callbacks
+#
+# These are registered whether or not the time-trace pane is available, so the
+# tab always shows the active configuration.
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("cfg-signals", "data"),
+    Output("cfg-time-window", "data"),
+    Output("cfg-status", "children"),
+    Input("cfg-apply-btn", "n_clicks"),
+    State("cfg-signal-select", "value"),
+    State("cfg-min-time", "value"),
+    State("cfg-max-time", "value"),
+    prevent_initial_call=True,
+)
+def apply_config(_n_clicks, signals, min_time, max_time):
+    """Publish the selection. A bad value changes nothing and shows a message."""
+    selected = [s.strip() for s in (signals or []) if s and s.strip()]
+    if not selected:
+        return dash.no_update, dash.no_update, "Select at least one signal."
+    if min_time is None or max_time is None:
+        return dash.no_update, dash.no_update, "Give a number for min_time and for max_time."
+
+    # TimeWindow holds the only definition of the ordering rule — see config_schema.py.
+    try:
+        window = TimeWindow(min_time=min_time, max_time=max_time)
+    except ValidationError as exc:
+        return dash.no_update, dash.no_update, exc.errors()[0]["msg"].removeprefix("Value error, ")
+
+    return (
+        selected,
+        {"min_time": window.min_time, "max_time": window.max_time},
+        f"Applied {len(selected)} signal(s) over {window.min_time}–{window.max_time} s.",
+    )
+
+
+@app.callback(
+    Output("cfg-signals", "data", allow_duplicate=True),
+    Output("cfg-time-window", "data", allow_duplicate=True),
+    Output("cfg-status", "children", allow_duplicate=True),
+    Output("cfg-signal-select", "value"),
+    Output("cfg-min-time", "value"),
+    Output("cfg-max-time", "value"),
+    Input("cfg-reset-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def reset_config(_n_clicks):
+    """Put the signal list and the time window back to the config file values."""
+    return (
+        list(TIME_TRACE_SIGNALS),
+        {"min_time": MIN_TIME, "max_time": MAX_TIME},
+        "Reset to the config file.",
+        list(TIME_TRACE_SIGNALS),
+        MIN_TIME,
+        MAX_TIME,
+    )
+
+
+@app.callback(
+    Output("cfg-discovered-signals", "data"),
+    Output("cfg-discover-status", "children"),
+    Input("cfg-discover-btn", "n_clicks"),
+    State("selected-shot", "data"),
+    prevent_initial_call=True,
+)
+def discover_signals(_n_clicks, shot_id):
+    """Ask the backend which signals it has for the selected shot."""
+    if shot_id is None:
+        return dash.no_update, "Select a shot first."
+    try:
+        found = _trace_backend.available_signals(int(shot_id))
+    except Exception as exc:
+        log.error("[discover_signals] shot %s: %s", shot_id, exc)
+        return dash.no_update, f"Could not list signals: {exc}"
+    if not found:
+        return dash.no_update, f"The '{BACKEND}' backend cannot list its signals — type the names."
+    return found, f"Found {len(found)} signal(s) in shot {shot_id}."
+
+
+@app.callback(
+    Output("cfg-signal-select", "options"),
+    Input("cfg-signal-select", "search_value"),
+    Input("cfg-discovered-signals", "data"),
+    State("cfg-signal-select", "value"),
+)
+def update_signal_options(search_value, discovered, selected):
+    """Build the dropdown options.
+
+    dcc.Dropdown has no free-entry mode, so whatever the user types is added as
+    an option. The selected values are always kept: Dash clears a value that
+    has no matching option.
+    """
+    options = set(discovered or []) | set(selected or []) | set(TIME_TRACE_SIGNALS)
+    if search_value:
+        options.add(search_value.strip())
+    return [{"label": s, "value": s} for s in sorted(options) if s]
+
+
+@app.callback(
+    Output("active-signals-display", "children"),
+    Output("active-time-display", "children"),
+    Input("cfg-signals", "data"),
+    Input("cfg-time-window", "data"),
+)
+def update_config_summary(signals, time_window):
+    """Keep the line above the time-trace pane the same as the applied values."""
+    names = _effective_signals(signals)
+    min_time, max_time = _effective_window(time_window)
+    return f"signals: {', '.join(names)}", f"time: {min_time}–{max_time} s"
 
 
 # ---------------------------------------------------------------------------

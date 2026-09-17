@@ -203,3 +203,139 @@ def test_refresh_dataset_merges_new_shot_without_moving_existing_points(app_modu
 
 def test_refresh_dataset_returns_none_when_nothing_new(app_module):
     assert app_module.refresh_dataset(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Configuration tab
+#
+# The tab lets the user change the displayed signals and the time window while
+# the app runs. The config file supplies the startup values: signals
+# ["ip", "ne"] over 0.0-1.0 s, with a third signal "dalpha" present in the
+# trace files but not listed in the config.
+# ---------------------------------------------------------------------------
+
+
+def test_apply_config_publishes_selection(app_module):
+    signals, window, message = app_module.apply_config(1, ["ip", "dalpha"], 0.0, 0.5)
+    assert signals == ["ip", "dalpha"]
+    assert window == {"min_time": 0.0, "max_time": 0.5}
+    assert "2 signal(s)" in message
+
+
+def test_apply_config_strips_and_drops_blank_names(app_module):
+    signals, _window, _message = app_module.apply_config(1, ["  ", "ip ", None], 0.0, 1.0)
+    assert signals == ["ip"]
+
+
+def test_apply_config_rejects_empty_signal_list(app_module):
+    import dash
+
+    signals, window, message = app_module.apply_config(1, [], 0.0, 1.0)
+    assert isinstance(signals, dash._callback.NoUpdate)
+    assert isinstance(window, dash._callback.NoUpdate)
+    assert message == "Select at least one signal."
+
+
+def test_apply_config_rejects_inverted_time_window(app_module):
+    import dash
+
+    signals, window, message = app_module.apply_config(1, ["ip"], 2.0, 1.5)
+    assert isinstance(signals, dash._callback.NoUpdate)
+    assert isinstance(window, dash._callback.NoUpdate)
+    assert "must be less than" in message
+
+
+def test_apply_config_rejects_missing_time_values(app_module):
+    _signals, _window, message = app_module.apply_config(1, ["ip"], None, 1.5)
+    assert message == "Give a number for min_time and for max_time."
+
+
+def test_reset_config_restores_config_file_values(app_module):
+    signals, window, message, value, min_time, max_time = app_module.reset_config(1)
+    assert signals == app_module.TIME_TRACE_SIGNALS == ["ip", "ne"]
+    assert window == {"min_time": app_module.MIN_TIME, "max_time": app_module.MAX_TIME}
+    assert value == app_module.TIME_TRACE_SIGNALS
+    assert (min_time, max_time) == (app_module.MIN_TIME, app_module.MAX_TIME)
+    assert "Reset" in message
+
+
+def test_discover_signals_needs_a_shot(app_module):
+    import dash
+
+    found, status = app_module.discover_signals(1, None)
+    assert isinstance(found, dash._callback.NoUpdate)
+    assert status == "Select a shot first."
+
+
+def test_discover_signals_lists_trace_file_columns(app_module):
+    found, status = app_module.discover_signals(1, 2000)
+    assert found == ["ip", "ne", "dalpha"]
+    assert "time" not in found
+    assert "3 signal(s)" in status
+
+
+def test_update_signal_options_keeps_selected_and_typed_names(app_module):
+    options = app_module.update_signal_options("my/typed/sig", ["ip", "ne"], ["dalpha"])
+    values = [o["value"] for o in options]
+    # Discovered, selected, typed and config names are all offered; a selected
+    # value missing from options would be cleared by Dash.
+    assert values == ["dalpha", "ip", "my/typed/sig", "ne"]
+
+
+def test_update_signal_options_tolerates_no_search_value(app_module):
+    options = app_module.update_signal_options(None, None, None)
+    assert [o["value"] for o in options] == ["ip", "ne"]
+
+
+def test_update_config_summary_follows_the_applied_values(app_module):
+    signals_text, time_text = app_module.update_config_summary(["ip", "dalpha"], {"min_time": 0.0, "max_time": 0.5})
+    assert signals_text == "signals: ip, dalpha"
+    assert time_text == "time: 0.0–0.5 s"
+
+
+def test_update_config_summary_falls_back_to_the_config_file(app_module):
+    signals_text, time_text = app_module.update_config_summary(None, None)
+    assert signals_text == "signals: ip, ne"
+    assert time_text == f"time: {app_module.MIN_TIME}–{app_module.MAX_TIME} s"
+
+
+def test_update_traces_uses_the_selected_signals_and_window(app_module):
+    fig, title = app_module.update_traces(2000, ["ip", "dalpha"], {"min_time": 0.0, "max_time": 0.5})
+    assert [trace.name for trace in fig.data] == ["ip", "dalpha"]
+    assert max(fig.data[0].x) <= 0.5
+    assert title == "Shot 2000"
+
+
+def test_update_traces_without_overrides_matches_the_config_file(app_module):
+    fig, _title = app_module.update_traces(2000, None, None)
+    assert [trace.name for trace in fig.data] == ["ip", "ne"]
+
+
+def test_update_traces_names_signals_the_shot_does_not_have(app_module):
+    _fig, title = app_module.update_traces(2000, ["ip", "not_a_signal"], None)
+    assert title == "Shot 2000 — no data for: not_a_signal"
+
+
+def test_selecting_signals_does_not_change_the_shared_backend(app_module):
+    """Each request copies the backend, so one browser cannot affect another."""
+    before = list(app_module._trace_backend.config.signals)
+    window_before = (
+        app_module._trace_backend.config.min_time,
+        app_module._trace_backend.config.max_time,
+    )
+    app_module.update_traces(2000, ["dalpha"], {"min_time": 0.0, "max_time": 0.25})
+    assert app_module._trace_backend.config.signals == before
+    assert (
+        app_module._trace_backend.config.min_time,
+        app_module._trace_backend.config.max_time,
+    ) == window_before
+
+
+def test_multi_shot_panels_use_the_selected_signals(app_module):
+    data = app_module._load_shots_traces(
+        [2000, 2001], signals=["dalpha"], time_window={"min_time": 0.0, "max_time": 0.5}
+    )
+    assert sorted(data) == ["2000", "2001"]
+    assert sorted(data["2000"]) == ["dalpha", "time"]
+    fig = app_module._render_outlier_traces_fig(data, ["dalpha"])
+    assert [a.text for a in fig.layout.annotations] == ["dalpha"]

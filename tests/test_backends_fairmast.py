@@ -63,6 +63,18 @@ class TestFairMastTraceBackend:
         backend = self._backend(tmp_path / "missing", "zarr", [])
         assert backend.is_available() is False
 
+    def test_available_signals_lists_scalar_variables_in_every_group(self, shot_store):
+        tmp_path, fmt = shot_store
+        backend = self._backend(tmp_path, fmt, [])
+        # The root variable has no prefix; group variables use "<group>/<var>".
+        # The 2-D profile thomson_scattering/t_e is left out: load() cannot plot it.
+        assert backend.available_signals(123) == ["ip", "magnetics/ip"]
+
+    def test_available_signals_empty_when_shot_not_found(self, shot_store):
+        tmp_path, fmt = shot_store
+        backend = self._backend(tmp_path, fmt, [])
+        assert backend.available_signals(999) == []
+
     def test_load_scalar_signal(self, shot_store):
         tmp_path, fmt = shot_store
         backend = self._backend(tmp_path, fmt, ["magnetics/ip"], min_time=0.0, max_time=1.5)

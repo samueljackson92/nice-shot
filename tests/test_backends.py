@@ -12,6 +12,7 @@ from nice_shot.backends import (
     LocalParquetTraceBackend,
     LongParquetShotDataBackend,
     ParquetShotDataBackend,
+    UdaTraceBackend,
     create_shot_data_backend,
     create_trace_backend,
     create_variable_shot_data_backend,
@@ -140,6 +141,14 @@ class TestLocalParquetTraceBackend:
         assert backend.find_shot_file(123) == str(sub / "123.parquet")
         assert backend.find_shot_file(999) is None
 
+    def test_find_shot_file_flat_data_dir(self, tmp_path):
+        """Files that sit directly in data_dir are found, not only ones in subdirs."""
+        trace_df = pd.DataFrame({"time": [0.0, 0.5, 1.0], "ip": [1.0, 2.0, 3.0]})
+        trace_df.to_parquet(tmp_path / "123.parquet", index=False)
+        backend = LocalParquetTraceBackend(BackendConfig(data_dir=str(tmp_path)))
+        assert backend.find_shot_file(123) == str(tmp_path / "123.parquet")
+        assert backend.load(123) is not None
+
     def test_load_filters_time_window(self, tmp_path):
         sub = tmp_path / "sub"
         sub.mkdir()
@@ -153,6 +162,75 @@ class TestLocalParquetTraceBackend:
     def test_load_returns_none_when_shot_not_found(self, tmp_path):
         backend = LocalParquetTraceBackend(BackendConfig(data_dir=str(tmp_path)))
         assert backend.load(999) is None
+
+    def test_available_signals_lists_columns_without_time(self, tmp_path):
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        trace_df = pd.DataFrame({"time": [0.0, 1.0], "ip": [1.0, 2.0], "ne": [3.0, 4.0]})
+        trace_df.to_parquet(sub / "123.parquet", index=False)
+        backend = LocalParquetTraceBackend(BackendConfig(data_dir=str(tmp_path)))
+        assert backend.available_signals(123) == ["ip", "ne"]
+
+    def test_available_signals_reads_csv_files(self, tmp_path):
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        pd.DataFrame({"time": [0.0, 1.0], "ip": [1.0, 2.0]}).to_csv(sub / "123.csv", index=False)
+        backend = LocalParquetTraceBackend(BackendConfig(data_dir=str(tmp_path)))
+        assert backend.available_signals(123) == ["ip"]
+
+    def test_available_signals_empty_when_shot_not_found(self, tmp_path):
+        backend = LocalParquetTraceBackend(BackendConfig(data_dir=str(tmp_path)))
+        assert backend.available_signals(999) == []
+
+
+class TestTraceBackendOverrides:
+    """The UI changes signals and the time window per request, not in place."""
+
+    def test_with_overrides_returns_self_when_nothing_is_given(self, tmp_path):
+        backend = LocalParquetTraceBackend(BackendConfig(data_dir=str(tmp_path)))
+        assert backend.with_overrides() is backend
+
+    def test_with_overrides_leaves_the_original_config_alone(self, tmp_path):
+        config = BackendConfig(data_dir=str(tmp_path), signals=["ip"], min_time=0.0, max_time=1.0)
+        backend = LocalParquetTraceBackend(config)
+        clone = backend.with_overrides(signals=["ne"], min_time=0.2, max_time=0.4)
+
+        assert clone is not backend
+        assert isinstance(clone, LocalParquetTraceBackend)
+        assert clone.config.signals == ["ne"]
+        assert (clone.config.min_time, clone.config.max_time) == (0.2, 0.4)
+        # The shared instance must be untouched — other requests still use it.
+        assert backend.config.signals == ["ip"]
+        assert (backend.config.min_time, backend.config.max_time) == (0.0, 1.0)
+        assert config.signals == ["ip"]
+
+    def test_with_overrides_keeps_other_config_fields(self, tmp_path):
+        config = BackendConfig(data_dir=str(tmp_path), options={"dsn": "x"}, timebase_hz=500)
+        clone = LocalParquetTraceBackend(config).with_overrides(min_time=0.5)
+        assert clone.config.data_dir == str(tmp_path)
+        assert clone.config.options == {"dsn": "x"}
+        assert clone.config.timebase_hz == 500
+
+    def test_overridden_time_window_is_applied_on_load(self, tmp_path):
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        trace_df = pd.DataFrame({"time": [0.0, 0.5, 1.0, 1.5], "ip": [1.0, 2.0, 3.0, 4.0]})
+        trace_df.to_parquet(sub / "123.parquet", index=False)
+        backend = LocalParquetTraceBackend(BackendConfig(data_dir=str(tmp_path), min_time=0.0, max_time=1.5))
+
+        clone = backend.with_overrides(min_time=0.4, max_time=1.1)
+        cropped = clone.load(123)
+        assert cropped is not None
+        assert list(cropped["time"]) == [0.5, 1.0]
+
+        # The original still sees the full window.
+        full = backend.load(123)
+        assert full is not None
+        assert list(full["time"]) == [0.0, 0.5, 1.0, 1.5]
+
+    def test_available_signals_is_empty_for_backends_that_cannot_list(self):
+        backend = UdaTraceBackend(BackendConfig(signals=["ip"]))
+        assert backend.available_signals(123) == []
 
 
 class TestRegistry:

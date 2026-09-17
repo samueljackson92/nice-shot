@@ -82,10 +82,33 @@ def app_module(tmp_path_factory):
     df.to_parquet(shot_data_path, index=False)
 
     config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.safe_dump({"projection_method": "pca"}))
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "projection_method": "pca",
+                "signals": ["ip", "ne"],
+                "time_window": {"min_time": 0.0, "max_time": 1.0},
+            }
+        )
+    )
 
-    data_dir = tmp_path / "traces"  # left empty -> SHOW_TRACES is False
-    data_dir.mkdir()
+    # One trace file per shot, so SHOW_TRACES is True and the time-trace
+    # callbacks are registered. The files hold a third signal, "dalpha", that
+    # the config does not list — the Configuration tab can select it, and
+    # available_signals() can find it.
+    data_dir = tmp_path / "traces"
+    trace_dir = data_dir / "campaign"
+    trace_dir.mkdir(parents=True)
+    trace_time = np.linspace(0.0, 2.0, 40)
+    for shot_id in df["shot_id"]:
+        pd.DataFrame(
+            {
+                "time": trace_time,
+                "ip": np.sin(trace_time),
+                "ne": np.cos(trace_time),
+                "dalpha": trace_time,
+            }
+        ).to_parquet(trace_dir / f"{shot_id}.parquet", index=False)
 
     umap_cache_path = tmp_path / "projection.npy"
 
