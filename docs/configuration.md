@@ -124,7 +124,77 @@ Only additions are picked up this way — edits to an existing shot's feature va
 reference_shot_col: reference__number
 ```
 
-Column in the shot statistics file that holds the reference (parent) shot ID. When set, a toggle button appears in the left panel; enabling it draws the full connected reference graph on the scatter plots when a shot is clicked. Omit (or set to `null`) to hide the feature.
+Column in the shot statistics file that holds the reference (parent) shot ID.
+
+When you set this column, the dashboard adds two features:
+
+- A toggle button in the left panel. Enable the button, then click a shot to draw the full connected reference graph on the scatter plots.
+- A **Lineage** tab. The tab shows how one shot differs from the shots before it in the same lineage.
+
+Omit the column, or set it to `null`, to hide both features.
+
+### The Lineage tab
+
+The tab uses the selected shot. If no shot is selected, the tab uses the shot with the highest shot ID.
+
+Use the lineage control to select which shots the tab includes:
+
+| Lineage | Shots included |
+|---------|----------------|
+| Ancestor chain | The shot, its reference shot, the reference shot of that shot, and so on. This is the default. |
+| Connected | All shots that connect to the shot through reference links. |
+| Siblings | All shots that have the same reference shot. |
+
+A lineage holds a maximum of 100 shots. The tab always keeps the selected shot.
+
+#### The summary card
+
+At the top, the tab shows a card with one row for each variable in the table. Each row gives the old value, the new value, the size of the change, and a bar. The largest change comes first, in either direction. Scroll the card to see the smaller changes and then the variables that did not change. The card covers all the variables in the table, not only the variables you select below it.
+
+Use the **Rank by** control to select the measure that sorts the card and gives the value in the change column:
+
+| Rank by | Description |
+|---------|-------------|
+| z-scored | The change divided by the spread of that column across all shots. This is the default. Use it to compare variables that have different units. |
+| percentage | The change as a percentage of the value of the reference shot. The card gives the percentage in its own column, and the percentage sets the length of the bar. The change column then gives the change in the units of the variable. The tab cannot calculate a percentage if the value of the reference shot is 0. |
+
+#### The history table
+
+The **History** view shows one row for each shot in the lineage. The newest shot is the first row. The `rel` column gives the position of each shot relative to the selected shot.
+
+The table gives one column for each variable you select. The colour of a cell shows the change from the previous shot in the lineage. Red is an increase. Blue is a decrease. The text in a cell is always the raw value. Point at a cell to see the change.
+
+Use the colour control to select the measure:
+
+| Measure | Description |
+|---------|-------------|
+| z-scored change | The change divided by the spread of that column across all shots. This is the default. It makes the colours comparable between variables that use different units. |
+| percent change | The change as a percentage of the previous value. The tab cannot calculate this value if the previous value is 0. |
+| absolute change | The change in the units of the variable. The colours are not comparable between variables. |
+
+#### The other views
+
+| View | Description |
+|------|-------------|
+| Notes | The text fields for each shot in the lineage. The tab shows all the columns that it cannot compare as numbers. The comment, objective and scenario fields come first. |
+| Tree | The reference links between the shots in the lineage. Click a node to select that shot. |
+| Sparklines | One small graph for each variable, in shot order. Use the **Visualise** control to select the variables. The view starts with the first 12 variables from the summary card, in the same order, and follows the **Rank by** control. Select **Top 12** to set this selection again. |
+
+The tab builds the **Sparklines** view only while you look at it. It shows a spinner over a view while the view loads. A wide table, or a lineage that holds many shots, can need some seconds.
+
+#### Variables
+
+A shot table can hold many variables. The variable control therefore searches the column names as you type, and shows a maximum of 200 names at a time.
+
+The tab selects all the projection features: the `umap_features` columns, or all the numeric columns if you do not set `umap_features`. These are the variables that give each shot its position on the scatter plot.
+
+Select **Top changed** to select the 20 variables that changed most instead. Select **Projection features** to select the projection features again. The tab keeps your selection when you click a different shot.
+
+#### Column filters
+
+The Lineage tab does not use the column filters. A hidden shot would make the change values incorrect, because the tab would then compare two shots that are not linked.
+
+Select **Mark filtered shots** to show which shots the filters hide. The tab keeps these shots in the table, but shows them in grey. The change values stay correct.
 
 ---
 

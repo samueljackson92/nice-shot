@@ -129,3 +129,39 @@ def app_module(tmp_path_factory):
         sys.argv = old_argv
 
     return module
+
+
+@pytest.fixture
+def lineage_df() -> pd.DataFrame:
+    """A shot table with a reference column exercising every lineage shape.
+
+    Graph: ``10 -> 9 -> 8 -> 7`` is a four-deep chain; ``5`` and ``6`` are
+    siblings under ``4``; ``1`` is an orphan; ``2`` references itself and ``3``
+    references a shot that is not in the table, so ``_build_reference_graph``
+    drops both edges.
+
+    Columns cover the comparison paths: ``ip`` varies, ``const`` has zero
+    variance, ``sparse`` is mostly missing and holds an ``inf``, ``scenario`` is
+    a genuine string, ``comment`` is free prose, and ``ip_str`` is a **numeric
+    column stored as object strings with the literal "nan" for missing** -- the
+    shape real parquet shot tables use, and the reason
+    ``_coerce_reference_numeric`` exists.
+    """
+    n = 10
+    shot_id = np.arange(1, n + 1)
+    ip = shot_id * 10.0
+    sparse = np.full(n, np.nan)
+    sparse[0] = np.inf
+    sparse[1] = 2.0
+    return pd.DataFrame(
+        {
+            "shot_id": shot_id,
+            "ref_shot": [None, 2, 999, None, 4, 4, None, 7, 8, 9],
+            "ip": ip,
+            "const": np.full(n, 5.0),
+            "sparse": sparse,
+            "scenario": ["H-mode"] * 5 + ["L-mode"] * 5,
+            "comment": [f"shot {s} comment" for s in shot_id],
+            "ip_str": ["nan", "nan"] + [f"{v * 2:.4f}" for v in ip[2:]],
+        }
+    )

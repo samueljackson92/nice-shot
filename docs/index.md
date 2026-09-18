@@ -14,6 +14,7 @@ Point it at a shot-statistics file and it gives you:
 - **Outlier detection** — Isolation Forest or Local Outlier Factor; outliers highlighted on scatter plots with sample traces shown automatically
 - **SHAP decision plots** — per-shot feature attribution (optional)
 - **Reference graph** — reference-shot relationships overlaid on scatter plots (optional)
+- **Lineage changes** — which variables changed between a shot and the earlier shots in its reference lineage (optional)
 
 ![NiceShot! dashboard](assets/ui.png)
 

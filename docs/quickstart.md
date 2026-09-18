@@ -145,6 +145,28 @@ The **Correlation** tab (right panel, next to Data Table) shows a Pearson correl
 
 ---
 
+## Reference lineage changes
+
+Set `reference_shot_col` in the config to the column that holds each shot's reference (parent) shot ID:
+
+```sh
+nice-shot shot_stats.parquet --reference-shot-col reference__number
+```
+
+The **Lineage** tab then appears in the right panel. It answers two questions about a shot: what changed against its reference shot, and what the earlier shots in the same lineage tried.
+
+- **Summary card** — all the variables in the table, largest change first, with the old value, the new value and the size of the change. Scroll the card to see them all. Use the **Rank by** control to sort by the z-scored change or by the percentage change. The percentage choice also gives the change in the units of the variable.
+- **History table** — one row for each shot in the lineage, newest first. Cells are coloured by the change from the previous shot. Red is an increase, blue a decrease. The text stays the raw value; point at a cell to see the change.
+- **Lineage control** — the ancestor chain (default), every connected shot, or the shots that share the same reference.
+- **Colour control** — the change divided by the column spread (default), the percent change, or the absolute change. The default makes colours comparable between variables with different units.
+- **More views** — the operator's notes per shot, a tree of the reference links (click a node to select that shot), and sparklines for the variables you select (the summary card's first 12 by default).
+
+The tab starts with all the projection features as its selection, because these are the variables that put each shot where it is on the scatter plot. The tab keeps your own selection when you click a different shot. Column filters do not change the lineage, because hiding a shot would make the change values compare two shots that are not linked.
+
+See [`reference_shot_col`](configuration.md#reference_shot_col) for the full reference.
+
+---
+
 ## With SHAP values
 
 ```sh

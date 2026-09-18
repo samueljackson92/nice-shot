@@ -7,7 +7,9 @@ import argparse
 import hashlib
 import importlib
 import logging
+import math
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -31,14 +33,22 @@ from nice_shot.analysis import (
     _apply_filter_mask,
     _apply_outlier_color,
     _build_reference_graph,
+    _classify_reference_columns,
     _extract_shot_id,
     _fit_projection,
+    _is_free_text,
     _load_projection_file,
     _run_clustering,
     _run_outlier_detection,
     _transform_projection,
+    column_stds,
     compute_active_filter_ids,
     get_reference_graph,
+    get_reference_lineage,
+    lineage_change_matrix,
+    rank_lineage_changes,
+    reference_compare_columns,
+    select_changed_columns,
 )
 from nice_shot.backends import (
     BackendConfig,
@@ -452,6 +462,13 @@ class Dataset:
     y_label: str = "Dim 2"
     ref_adjacency: dict[int, list[int]] = field(default_factory=dict)
     ref_parent: dict[int, int] = field(default_factory=dict)
+    # Lineage-tab precomputation: the candidate comparison columns, which of
+    # them compare as numbers, and each one's spread over the whole table. All
+    # three are per-dataset, so they are built once in _finalize_dataset rather
+    # than on every click -- see the Lineage callbacks.
+    ref_compare_cols: tuple[str, ...] = ()
+    ref_numeric_cols: tuple[str, ...] = ()
+    ref_stds: pd.Series | None = None
     shap_idx: dict[int, int] = field(default_factory=dict)
     # None exactly when --projection (a precomputed embedding file) is in use —
     # there's no fitted transformer to reuse, so refresh_dataset() is a no-op then.
@@ -518,6 +535,29 @@ def _finalize_dataset(
         else:
             log.warning("reference_shot_col='%s' produced no valid edges.", REFERENCE_SHOT_COL)
 
+    # Lineage-tab precomputation. Only worth doing when there is a reference
+    # graph to walk, and deliberately independent of `numeric_cols`: the tab
+    # needs the numeric/categorical split (text compares by equality, not
+    # subtraction), and long-format sources keep numeric columns as dtype=object
+    # (backends.py passes coerce_objects=False there). See
+    # _classify_reference_columns.
+    ref_compare_cols: tuple[str, ...] = ()
+    ref_numeric_cols: tuple[str, ...] = ()
+    ref_stds: pd.Series | None = None
+    if ref_adjacency:
+        # ref_adjacency is only non-empty when the column is set, but be explicit for the type.
+        exclude = [REFERENCE_SHOT_COL] if REFERENCE_SHOT_COL else []
+        compare = reference_compare_columns(data, search_cols=search_cols, exclude=exclude)
+        numeric, _categorical = _classify_reference_columns(data, compare)
+        ref_compare_cols = tuple(compare)
+        ref_numeric_cols = tuple(numeric)
+        ref_stds = column_stds(data, numeric)
+        log.info(
+            "Lineage comparison: %d candidate column(s), %d compare as numbers",
+            len(ref_compare_cols),
+            len(ref_numeric_cols),
+        )
+
     return Dataset(
         df=data,
         search_cols=search_cols,
@@ -528,6 +568,9 @@ def _finalize_dataset(
         y_label=y_label,
         ref_adjacency=ref_adjacency,
         ref_parent=ref_parent,
+        ref_compare_cols=ref_compare_cols,
+        ref_numeric_cols=ref_numeric_cols,
+        ref_stds=ref_stds,
         shap_idx=shap_idx,
         model=model,
     )
@@ -678,6 +721,55 @@ if VARIABLE_MODE:
     SHOW_REF_TOGGLE = bool(REFERENCE_SHOT_COL and REFERENCE_SHOT_COL in _schema_df.columns)
 else:
     SHOW_REF_TOGGLE = bool(_require_dataset(None).ref_adjacency)
+
+# ---------------------------------------------------------------------------
+# Lineage tab — sizing and caps
+#
+# Candidate columns come from the Dataset (ds.ref_compare_cols), which is built
+# per dataset and therefore correct in long-format mode too. This list is only
+# the startup fallback for the dropdown, before any lineage has been resolved.
+# ---------------------------------------------------------------------------
+_lin_fallback_cols = [c for c in (UMAP_FEATURES or numeric_cols) if c != REFERENCE_SHOT_COL]
+_LIN_DEFAULT_N = 20  # columns seeded by "Top changed"
+_LIN_OPTION_LIMIT = 200  # options returned per dropdown search
+_LIN_MAX_STYLE_CELLS = 4000  # cap on style_data_conditional entries
+_LIN_CARD_MAX = 500  # ranked rows the summary card will render
+_LIN_CARD_H = "300px"  # scroll height of the summary card's ranked table
+_LIN_SPARK_PANELS = 12  # variables seeded into the sparkline selector
+# A safety limit, not a setting: the panels are whatever is selected, but a few
+# hundred Plotly subplots take seconds to draw and scroll. The view says so
+# whenever it bites, which on a hand-made selection it never does.
+_LIN_SPARK_HARD_MAX = 48
+_LIN_NOTE_CHARS = 200  # free-text truncation in the notes table
+
+_LIN_SCOPE_OPTIONS = [
+    {"label": "Ancestor chain", "value": "chain"},
+    {"label": "Connected", "value": "component"},
+    {"label": "Siblings", "value": "siblings"},
+]
+_LIN_METRIC_OPTIONS = [
+    {"label": "z-scored change", "value": "zscore"},
+    {"label": "percent change", "value": "percent"},
+    {"label": "absolute change", "value": "absolute"},
+]
+# The summary card ranks by its own measure: "what moved most" is a different
+# question from "what should the history table colour by". Both options are
+# comparable between variables, which is what a ranking needs -- one against
+# the spread of the column across every shot, the other against the value the
+# reference shot held. The percentage says nothing useful about a column whose
+# reference value is near 0, so the card reports it as undefined rather than
+# ranking on an invented number.
+_LIN_CARD_METRIC_OPTIONS = [
+    {"label": " z-scored", "value": "zscore"},
+    {"label": " percentage", "value": "percent"},
+]
+# Shown under the colour ramp so nobody reads an "absolute" heatmap as if the
+# intensities were comparable between columns.
+_LIN_METRIC_HINTS = {
+    "zscore": "Change divided by the column spread across all shots. Comparable between columns.",
+    "percent": "Change as a percentage of the previous value. Undefined when that value is 0.",
+    "absolute": "Change in the column's own units. Not comparable between columns.",
+}
 
 # ---------------------------------------------------------------------------
 # SHAP data loading
@@ -1297,6 +1389,853 @@ def _config_section(title: str, description: str, children: list) -> html.Div:
     )
 
 
+# ---------------------------------------------------------------------------
+# Lineage tab — pure render helpers
+#
+# These live outside the `if SHOW_REF_TOGGLE:` guard on purpose: the callbacks
+# below are only registered when a reference column exists, but these functions
+# must stay importable (and unit-testable) either way.
+# ---------------------------------------------------------------------------
+
+# Diverging ramp for a signed, normalised change. Darker and less saturated
+# than Plotly's RdBu_r, which is built for white backgrounds and washes out
+# 11px text on the #16213e cell fill. Same hue family as the data table's
+# selection (#2a3a6e) and latest-shot (#1e4a33) highlights.
+_LIN_UP = ["#4a2b38", "#6b2f3e", "#8f3548", "#b63e54"]  # weak -> strong increase
+_LIN_DOWN = ["#1b2f52", "#1c3f74", "#1d5199", "#2266bd"]  # weak -> strong decrease
+_LIN_BINS = (0.15, 0.35, 0.60, 0.85)  # |normalised| break points
+_LIN_UP_TEXT = "#ff8fa3"
+_LIN_DOWN_TEXT = "#7fb8ff"
+
+# Full-saturation point for each metric. The first two are fixed so a colour
+# means the same thing in every lineage: a 2-sigma move, or a doubling. The
+# absolute metric has no natural scale, so it is normalised per lineage and
+# the UI says so.
+_LIN_METRIC_FULL_SCALE = {"zscore": 2.0, "percent": 100.0}
+
+
+def _lin_message(text: str) -> html.Div:
+    """The tab's empty-state text, styled like the Shot Info panel's."""
+    return html.Div(text, style=dict(fontSize="11px", color="#555", padding="8px 4px"))
+
+
+def _lin_colour_scale(matrix) -> float:
+    """Divisor that maps a metric value onto the [-1, 1] colour ramp.
+
+    Fixed for the z-scored and percent metrics, so intensity is comparable
+    between shots and between lineages. The absolute metric is normalised
+    against the largest change in this lineage, because its units are whatever
+    the column happens to use.
+    """
+    fixed = _LIN_METRIC_FULL_SCALE.get(matrix.metric)
+    if fixed:
+        return float(fixed)
+    if matrix.magnitude.empty:
+        return 1.0
+    biggest = matrix.magnitude.to_numpy(dtype=float)
+    biggest = np.nanmax(biggest) if np.isfinite(biggest).any() else 0.0
+    return float(biggest) or 1.0
+
+
+def _lin_cell_color(normalised) -> str | None:
+    """Ramp colour for a signed, normalised change, or ``None`` to leave it be.
+
+    Returning ``None`` below the first bin matters twice: an unchanged cell then
+    inherits the ordinary zebra styling, and the conditional-style list stays
+    short enough to send.
+    """
+    if normalised is None:
+        return None
+    try:
+        value = float(normalised)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(value) or abs(value) < _LIN_BINS[0]:
+        return None
+    ramp = _LIN_UP if value > 0 else _LIN_DOWN
+    index = min(int(np.searchsorted(_LIN_BINS, abs(value), side="right")) - 1, len(ramp) - 1)
+    return ramp[index]
+
+
+def _lin_relation_labels(shot_ids: list[int], subject: int) -> list[str]:
+    """Position of each lineage shot relative to the subject."""
+    try:
+        origin = shot_ids.index(subject)
+    except ValueError:
+        origin = 0
+    labels = []
+    for i in range(len(shot_ids)):
+        step = i - origin
+        labels.append("subject" if step == 0 else f"{-step:+d}")
+    return labels
+
+
+def _lin_format(value) -> str:
+    """Render one cell for display, shortening free prose."""
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        if np.isnan(value):
+            return ""
+        return f"{value:.4g}"
+    text = str(value).strip()
+    if text.lower() in ("nan", "none", "nat"):
+        return ""
+    return text if len(text) <= 40 else text[:39] + "…"
+
+
+def _lin_table_columns(columns: list[str], kinds: dict[str, str]) -> list[dict]:
+    """Column definitions for the history table.
+
+    Floats format as ``.4g``, matching ``_table_column_defs`` so a value reads
+    the same here as in the Data Table.
+    """
+    defs: list[dict] = [
+        {"name": "shot", "id": "shot_id"},
+        {"name": "rel", "id": "_rel"},
+    ]
+    for col in columns:
+        if kinds.get(col) == "numeric":
+            defs.append({"name": col, "id": col, "type": "numeric", "format": {"specifier": ".4g"}})
+        else:
+            defs.append({"name": col, "id": col})
+    return defs
+
+
+def _lin_table_data(matrix, columns: list[str], subject: int) -> list[dict]:
+    """One record per lineage shot, newest first."""
+    labels = _lin_relation_labels(matrix.shot_ids, subject)
+    records = []
+    for label, shot_id in zip(labels, matrix.shot_ids):
+        row: dict = {"shot_id": shot_id, "_rel": label}
+        for col in columns:
+            raw = matrix.values.at[shot_id, col]
+            if matrix.kinds.get(col) == "numeric":
+                numeric = pd.to_numeric(pd.Series([raw]), errors="coerce").iloc[0]
+                row[col] = None if pd.isna(numeric) else float(numeric)
+            else:
+                row[col] = _lin_format(raw)
+        records.append(row)
+    return records
+
+
+def _lin_tooltip_data(matrix, columns: list[str]) -> list[dict]:
+    """Per-cell hover text carrying the change the colour stands for.
+
+    The cell itself always shows the raw value; the delta, percentage and
+    metric live here so no cell has to hold three numbers.
+    """
+    tooltips = []
+    for shot_id in matrix.shot_ids:
+        row: dict = {}
+        for col in columns:
+            note = str(matrix.note.at[shot_id, col] or "")
+            if matrix.kinds.get(col) != "numeric":
+                row[col] = note or "unchanged"
+                continue
+            signed = matrix.delta.at[shot_id, col]
+            metric_value = matrix.metric_value.at[shot_id, col]
+            parts = []
+            if pd.notna(signed):
+                parts.append(f"Δ = {signed:+.4g}")
+            if pd.notna(metric_value):
+                unit = "%" if matrix.metric == "percent" else ""
+                label = {"zscore": "z", "percent": "pct", "absolute": "abs"}[matrix.metric]
+                parts.append(f"{label} = {metric_value:+.3g}{unit}")
+            if note:
+                parts.append(note)
+            row[col] = "  ".join(parts) or "unchanged"
+        tooltips.append(row)
+    return tooltips
+
+
+def _lin_style_data_conditional(matrix, columns: list[str], subject: int) -> list[dict]:
+    """Per-cell colouring for the history table.
+
+    ``filter_query`` targets whole rows, which is what ``highlight_table_row``
+    needs but not what this table needs — a single cell requires
+    ``{"if": {"column_id": ..., "row_index": ...}}``. Dash applies entries in
+    order and later ones win, so the broad rules are emitted first.
+    """
+    styles: list[dict] = [
+        {"if": {"row_index": "odd"}, "backgroundColor": PANEL_BG},
+        {
+            "if": {"column_id": "shot_id"},
+            "backgroundColor": PANEL_BG,
+            "color": ACCENT,
+            "fontWeight": "600",
+        },
+        {"if": {"column_id": "_rel"}, "backgroundColor": PANEL_BG, "color": "#888"},
+    ]
+    scale = _lin_colour_scale(matrix)
+    budget = _LIN_MAX_STYLE_CELLS
+    for row_index, shot_id in enumerate(matrix.shot_ids):
+        if shot_id == subject:
+            styles.append({"if": {"row_index": row_index}, "borderTop": f"2px solid {ACCENT}"})
+        if shot_id in matrix.excluded:
+            # Hidden by the active filters. Greyed rather than dropped, so the
+            # deltas either side of it stay real.
+            styles.append({"if": {"row_index": row_index}, "color": "#555", "fontStyle": "italic"})
+            continue
+        for col in columns:
+            if budget <= 0:
+                return styles
+            if matrix.kinds.get(col) != "numeric":
+                if bool(matrix.changed.at[shot_id, col]):
+                    styles.append(
+                        {
+                            "if": {"column_id": col, "row_index": row_index},
+                            "backgroundColor": "#3a3358",
+                            "color": "#ffffff",
+                        }
+                    )
+                    budget -= 1
+                continue
+            metric_value = matrix.metric_value.at[shot_id, col]
+            color = _lin_cell_color(metric_value / scale if pd.notna(metric_value) else None)
+            if color is None:
+                continue
+            styles.append(
+                {
+                    "if": {"column_id": col, "row_index": row_index},
+                    "backgroundColor": color,
+                    "color": "#ffffff",
+                }
+            )
+            budget -= 1
+    return styles
+
+
+# Header label for the card's change column. The unit belongs in the header,
+# not on every row: the card lists every variable, so a repeated suffix is 500
+# lines of noise.
+# The z-scored ranking has nowhere else to put its measure, so the change
+# column carries it. Every other ranking shows the change in the column's own
+# units there and puts its measure in the cell alongside the bar.
+_LIN_CARD_CHANGE_LABEL = {"zscore": "change (σ)", "percent": "change", "absolute": "change"}
+
+
+def _lin_signed_metric(item) -> float:
+    """The direction of the item's change: its measure, or its raw delta.
+
+    Used for the colour and the bar only. A column whose measure is undefined
+    (zero variance under z-scores, a zero baseline under percent) still has a
+    direction in its own units, and that is enough to tint a row.
+    """
+    return item.metric_value if np.isfinite(item.metric_value) else item.delta
+
+
+def _lin_change_text(item, metric: str) -> tuple[str, str]:
+    """Text and colour for one ranked row's change column.
+
+    Reports the measure the rows are *sorted* by, so the number on screen is
+    the number that decided the order. ``item.changed`` is what separates an
+    unchanged categorical column from a changed one — text carries no delta to
+    read a zero out of — and a column with no usable value says why rather than
+    showing a blank.
+    """
+    if not item.changed:
+        return "unchanged", "#666"
+    if item.kind != "numeric":
+        return "changed", "#b9a7ff"
+    # Under the z-scored ranking this column *is* the measure, so it shows that
+    # and nothing else: the header names the unit, and a number in any other
+    # unit would be a lie rather than a fallback. Under every other ranking the
+    # measure has its own cell, so this one shows the change in the column's
+    # own units. Either way a value that does not exist reports why.
+    signed = item.metric_value if metric == "zscore" else item.delta
+    if not np.isfinite(signed):
+        return (item.note or "—"), "#888"
+    color = _LIN_UP_TEXT if signed > 0 else _LIN_DOWN_TEXT
+    return f"{signed:+.2f}" if metric == "zscore" else f"{signed:+.4g}", color
+
+
+# Full-bar point for the percentage shown beside an absolute ranking: a
+# doubling, the same reading the percent colour metric uses.
+_LIN_PCT_FULL_SCALE = 100.0
+
+
+def _lin_percent_text(item) -> str:
+    """The item's change as a percentage of the reference value, if it has one."""
+    if not item.changed or item.pct is None or not np.isfinite(item.pct):
+        return ""
+    return f"{item.pct:+.1f}%"
+
+
+def _lin_magnitude_cell(item, scale: float, metric: str) -> html.Td:
+    """The card's right-hand cell: a bar, labelled with a percentage where one fits.
+
+    The change column beside it holds a number in the column's own units, and
+    those units say nothing about whether a change is large — 40 kA and 40 kW
+    share a scale and nothing else. The percentage does say it, and needs no
+    scale to be read against, so it both labels this cell and sets the bar's
+    length.
+
+    Under the z-scored ranking the change column is already comparable between
+    columns, so the bar keeps its fixed 2-sigma scale and stays unlabelled.
+    """
+    if metric != "zscore":
+        percent = _lin_percent_text(item)
+        share = 0.0 if not percent else item.pct / _LIN_PCT_FULL_SCALE
+    else:
+        percent = ""
+        share = 0.0 if not np.isfinite(item.magnitude) else item.magnitude / scale
+        if _lin_signed_metric(item) < 0:
+            share = -share
+    fraction = min(1.0, abs(share))
+    bar = html.Div(
+        style=dict(backgroundColor="#2a2a4a", borderRadius="2px", width="100%", height="6px"),
+        children=html.Div(
+            style=dict(
+                backgroundColor=_lin_cell_color(share) or "#2a2a4a",
+                width=f"{fraction * 100:.0f}%",
+                height="6px",
+                borderRadius="2px",
+            )
+        ),
+    )
+    if metric == "zscore":
+        return html.Td(bar, style=dict(padding="3px 8px", width="110px"))
+    return html.Td(
+        html.Div(
+            style=dict(display="flex", alignItems="center", gap="8px"),
+            children=[
+                html.Span(
+                    percent or "—",
+                    style=dict(
+                        color=(_LIN_UP_TEXT if (percent and item.pct > 0) else _LIN_DOWN_TEXT) if percent else "#888",
+                        fontSize="10px",
+                        minWidth="54px",
+                        textAlign="right",
+                        whiteSpace="nowrap",
+                    ),
+                ),
+                html.Div(bar, style=dict(flex="1")),
+            ],
+        ),
+        style=dict(padding="3px 8px", width="170px"),
+    )
+
+
+def _lin_card_header(metric: str) -> html.Thead:
+    """Sticky column labels for the summary card.
+
+    Sticky because the card scrolls: 500 rows down, "which number is this"
+    needs an answer that is still on screen.
+    """
+    labels = (
+        "variable",
+        "reference → subject",
+        _LIN_CARD_CHANGE_LABEL.get(metric, "change"),
+        "" if metric == "zscore" else "% change",
+    )
+    return html.Thead(
+        html.Tr(
+            [
+                html.Th(
+                    label,
+                    style=dict(
+                        position="sticky",
+                        top="0",
+                        zIndex=2,
+                        backgroundColor=PANEL_BG,
+                        color="#888",
+                        fontSize="10px",
+                        fontWeight="600",
+                        textAlign="right" if index == 2 else "left",
+                        padding="3px 8px",
+                        borderBottom=f"1px solid {ACCENT}",
+                    ),
+                )
+                for index, label in enumerate(labels)
+            ]
+        )
+    )
+
+
+def _lin_change_row(item, index: int, scale: float, metric: str = "zscore") -> html.Tr:
+    """One ranked-change row: name, old -> new, the change, and the bar."""
+    change_text, change_color = _lin_change_text(item, metric)
+    return html.Tr(
+        style=dict(
+            borderBottom="1px solid #2a2a4a",
+            backgroundColor="#16213e" if index % 2 == 0 else PANEL_BG,
+        ),
+        children=[
+            html.Td(
+                item.column,
+                title=item.column,
+                style=dict(
+                    color=ACCENT,
+                    fontWeight="600",
+                    padding="3px 8px",
+                    whiteSpace="nowrap",
+                    maxWidth="220px",
+                    overflow="hidden",
+                    textOverflow="ellipsis",
+                ),
+            ),
+            html.Td(
+                f"{_lin_format(item.old)} → {_lin_format(item.new)}",
+                style=dict(color=TEXT, padding="3px 8px", whiteSpace="nowrap"),
+            ),
+            html.Td(
+                change_text,
+                style=dict(color=change_color, padding="3px 8px", whiteSpace="nowrap", textAlign="right"),
+            ),
+            _lin_magnitude_cell(item, scale, metric),
+        ],
+    )
+
+
+def _lin_render_change_cards(matrix, items, subject: int, n_compared: int) -> html.Div:
+    """The summary card that sits above the history table.
+
+    Lists every variable it is given, biggest change first, rather than a top
+    ten: the whole ranking is the summary, and the table scrolls inside the
+    card so the heading and the tally stay put while it does.
+    """
+    reference = matrix.shot_ids[1] if len(matrix.shot_ids) > 1 else None
+    n_changed = int(matrix.changed.loc[subject].sum()) if subject in matrix.changed.index else 0
+    scale = _lin_colour_scale(matrix)
+
+    heading = f"Shot {subject}"
+    if reference is not None:
+        heading += f"  ·  reference {reference}"
+    heading += f"  ·  {len(matrix.shot_ids)} shots in lineage"
+
+    if not items:
+        body = _lin_message(f"No differences found across {n_compared} variable(s).")
+    else:
+        body = html.Div(
+            style=dict(maxHeight=_LIN_CARD_H, overflowY="auto"),
+            children=html.Table(
+                style=dict(width="100%", borderCollapse="collapse", fontSize="11px"),
+                children=[
+                    _lin_card_header(matrix.metric),
+                    html.Tbody([_lin_change_row(item, i, scale, matrix.metric) for i, item in enumerate(items)]),
+                ],
+            ),
+        )
+
+    footer_bits = [f"{n_changed} of {n_compared} variable(s) changed"]
+    ordering = "largest change first"
+    if len(items) < n_compared:
+        ordering = f"{len(items)} shown, {ordering}"
+    footer_bits.append(ordering)
+    footer_bits.append(_LIN_METRIC_HINTS.get(matrix.metric, ""))
+
+    return html.Div(
+        children=[
+            html.Div(
+                heading,
+                style=dict(fontSize="12px", fontWeight="600", color=TEXT, marginBottom="6px"),
+            ),
+            body,
+            html.Div(
+                "  ·  ".join(b for b in footer_bits if b),
+                style=dict(fontSize="10px", color="#888", marginTop="6px"),
+            ),
+        ]
+    )
+
+
+def _lin_note_columns(compare_cols, numeric_cols) -> list[str]:
+    """Every text column in the table, the prose and scenario fields first.
+
+    A column the tab cannot compare as a number holds text, and text is what
+    answers "what were they trying" — so all of it is shown. A fixed list of
+    acceptable names cannot do that: the names differ between machines, and the
+    one field an operator actually fills in would be hidden with no way to ask
+    for it. The recognised prose and scenario names still come first, because
+    they carry the intent while a status flag does not.
+    """
+    numeric = set(numeric_cols or ())
+    named = ("scenario", "shot_type", "programme", "campaign", "session", "gas", "pellet")
+    text = [c for c in compare_cols if c not in numeric]
+    preferred = [c for c in text if _is_free_text(c) or any(hint in c.lower() for hint in named)]
+    return preferred + [c for c in text if c not in set(preferred)]
+
+
+def _lin_notes_table(df: pd.DataFrame, shot_ids: list[int], subject: int, columns: list[str]):
+    """One block per lineage shot showing its notes, subject first.
+
+    A block per shot rather than a wide table: these fields hold sentences, and
+    sentences do not fit in a 80px table cell.
+    """
+    if not columns:
+        return _lin_message("This table has no text columns to show.")
+    indexed = df.drop_duplicates("shot_id").set_index(df.drop_duplicates("shot_id")["shot_id"].astype(int).values)
+    blocks = []
+    for label, shot_id in zip(_lin_relation_labels(shot_ids, subject), shot_ids):
+        if shot_id not in indexed.index:
+            continue
+        row = indexed.loc[shot_id]
+        entries = []
+        for col in columns:
+            text = _lin_format_note(row.get(col))
+            if text:
+                entries.append(
+                    html.Div(
+                        style=dict(display="flex", gap="8px", marginBottom="2px"),
+                        children=[
+                            html.Span(
+                                col,
+                                style=dict(
+                                    color=ACCENT,
+                                    fontSize="10px",
+                                    fontWeight="600",
+                                    minWidth="150px",
+                                    flexShrink="0",
+                                ),
+                            ),
+                            html.Span(text, title=str(row.get(col)), style=dict(color=TEXT, fontSize="11px")),
+                        ],
+                    )
+                )
+        blocks.append(
+            html.Div(
+                style=dict(
+                    border=f"1px solid {ACCENT}" if shot_id == subject else BORDER,
+                    borderRadius="6px",
+                    padding="8px 10px",
+                    marginBottom="8px",
+                    backgroundColor=PANEL_BG,
+                ),
+                children=[
+                    html.Div(
+                        f"shot {shot_id}  ({label})",
+                        style=dict(fontSize="11px", fontWeight="600", color=TEXT, marginBottom="6px"),
+                    ),
+                    *(entries or [_lin_message("No notes recorded for this shot.")]),
+                ],
+            )
+        )
+    return html.Div(blocks) if blocks else _lin_message("No notes recorded for this lineage.")
+
+
+# Some shot-log fields hold HTML (MAST-U's "programme" column is a list of
+# links). Dash escapes it, so it is shown verbatim rather than rendered —
+# stripping the tags is what makes the text readable.
+_LIN_TAG_RE = re.compile(r"<[^>]+>")
+_LIN_SPACE_RE = re.compile(r"\s+")
+
+
+def _lin_format_note(value) -> str:
+    """Trim one free-text field for display, keeping the full text in a tooltip."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and not np.isfinite(value):
+        return ""
+    text = _LIN_SPACE_RE.sub(" ", _LIN_TAG_RE.sub(" ", str(value))).strip()
+    if text.lower() in ("nan", "none", "nat", ""):
+        return ""
+    return text if len(text) <= _LIN_NOTE_CHARS else text[: _LIN_NOTE_CHARS - 1] + "…"
+
+
+_LIN_SUBTAB_STYLE = dict(color=TEXT, backgroundColor=PANEL_BG, fontSize="12px", padding="4px 10px")
+_LIN_SUBTAB_SELECTED = dict(
+    color=ACCENT,
+    backgroundColor=DARK_BG,
+    borderTop=f"2px solid {ACCENT}",
+    fontSize="12px",
+    padding="4px 10px",
+)
+_LIN_VIEW_H = "calc(100vh - 430px)"
+# Long enough that a fast render never flashes a spinner, short enough that a
+# slow one is never mistaken for a broken tab.
+_LIN_SPINNER_DELAY = 250
+
+
+def _lin_subtab(label: str, value: str, children: list, controls: list | None = None) -> dcc.Tab:
+    """One sub-view, with a spinner over its output while the callback runs.
+
+    Every sub-view reads the whole lineage, and the History table builds one
+    styled cell per shot per variable — slow enough on a wide table that
+    without this the tab looks broken rather than busy. The overlay keeps the
+    previous content on screen, dimmed, so it stays clear which view is
+    loading.
+
+    *controls* stay outside the overlay: a dimmed selector that cannot be
+    clicked while the figure it drives redraws is worse than no feedback.
+    """
+    body = dcc.Loading(
+        children=children,
+        type="circle",
+        color=ACCENT,
+        delay_show=_LIN_SPINNER_DELAY,
+        overlay_style=dict(visibility="visible", opacity=0.35),
+    )
+    return dcc.Tab(
+        label=label,
+        value=value,
+        style=_LIN_SUBTAB_STYLE,
+        selected_style=_LIN_SUBTAB_SELECTED,
+        children=(controls or []) + [body],
+    )
+
+
+def _lin_control_block(label: str, control) -> html.Div:
+    return html.Div([html.Label(label, style=_CLUSTER_LABEL_STYLE), control])
+
+
+def _lineage_tab_children() -> list:
+    """Body of the Lineage tab.
+
+    A factory rather than an inline literal: the layout expression in this
+    module is already thousands of lines, and this keeps the tab reviewable.
+    Callable whether or not a reference column is configured, so tests can
+    build it from the ordinary app fixture.
+    """
+    return [
+        html.Div(
+            style=dict(display="flex", flexDirection="column", padding="8px 4px 12px"),
+            children=[
+                # -- Control bar --
+                html.Div(
+                    style=dict(display="flex", alignItems="flex-end", gap="16px", flexWrap="wrap"),
+                    children=[
+                        _lin_control_block(
+                            "Lineage",
+                            dcc.RadioItems(
+                                id="lin-scope",
+                                options=_LIN_SCOPE_OPTIONS,
+                                value="chain",
+                                inline=True,
+                                labelStyle=dict(marginRight="10px", fontSize="11px", color=TEXT),
+                                inputStyle=dict(marginRight="4px"),
+                            ),
+                        ),
+                        _lin_control_block(
+                            "Colour by",
+                            dcc.Dropdown(
+                                id="lin-metric",
+                                options=_LIN_METRIC_OPTIONS,
+                                value="zscore",
+                                clearable=False,
+                                style=dict(DROPDOWN_STYLE, width="190px"),
+                            ),
+                        ),
+                        html.Div(
+                            style=dict(flex="1", minWidth="260px"),
+                            children=[
+                                html.Label("Variables", style=_CLUSTER_LABEL_STYLE),
+                                dcc.Dropdown(
+                                    id="lin-columns-dd",
+                                    options=[],
+                                    value=[],
+                                    multi=True,
+                                    placeholder="Type to search columns…",
+                                    style=dict(DROPDOWN_STYLE, width="100%"),
+                                ),
+                            ],
+                        ),
+                        html.Div(
+                            style=dict(display="flex", alignItems="center", gap="6px", flexWrap="wrap"),
+                            children=[
+                                html.Button(
+                                    "Top changed",
+                                    id="lin-cols-changed-btn",
+                                    n_clicks=0,
+                                    style=_BTN_STYLE_SECONDARY,
+                                ),
+                                html.Button(
+                                    "Projection features",
+                                    id="lin-cols-features-btn",
+                                    n_clicks=0,
+                                    style=_BTN_STYLE_SECONDARY,
+                                ),
+                                html.Button(
+                                    "Clear",
+                                    id="lin-cols-clear-btn",
+                                    n_clicks=0,
+                                    style=_BTN_STYLE_SECONDARY,
+                                ),
+                                html.Span(id="lin-columns-count", style=dict(fontSize="10px", color="#888")),
+                            ],
+                        ),
+                        dcc.Checklist(
+                            id="lin-respect-filters",
+                            options=[{"label": " Mark filtered shots", "value": "respect"}],
+                            value=[],
+                            labelStyle=dict(fontSize="11px", color=TEXT),
+                        ),
+                    ],
+                ),
+                html.Span(
+                    id="lin-subject-display",
+                    style=dict(fontSize="11px", color="#888", margin="8px 0 4px"),
+                ),
+                # -- Summary card: always visible, so it stays the key for
+                #    whichever sub-view is open. It lists every variable, so
+                #    the scroll lives on its table rather than on this box —
+                #    the heading and the tally must not scroll away. --
+                html.Div(
+                    style=dict(display="flex", alignItems="center", gap="8px", margin="0 0 4px"),
+                    children=[
+                        html.Label("Rank by", style=dict(_CLUSTER_LABEL_STYLE, display="inline", marginBottom="0")),
+                        dcc.RadioItems(
+                            id="lin-card-metric",
+                            options=_LIN_CARD_METRIC_OPTIONS,
+                            value="zscore",
+                            inline=True,
+                            labelStyle=dict(marginRight="10px", fontSize="11px", color=TEXT),
+                            inputStyle=dict(marginRight="4px"),
+                        ),
+                    ],
+                ),
+                html.Div(
+                    id="lin-change-cards",
+                    style=dict(
+                        border=BORDER,
+                        borderRadius="6px",
+                        padding="10px 12px",
+                        marginBottom="10px",
+                        backgroundColor=PANEL_BG,
+                    ),
+                ),
+                # -- Sub-views. dcc.Tabs renders only the selected child, so
+                #    a sub-view's figure is never built until it is asked for. --
+                dcc.Tabs(
+                    id="lin-subtabs",
+                    value="lin-history",
+                    colors=dict(border=BORDER, primary=ACCENT, background=PANEL_BG),
+                    children=[
+                        _lin_subtab(
+                            "History",
+                            "lin-history",
+                            [
+                                html.Div(id="lin-history-msg", style=dict(fontSize="10px", color="#888")),
+                                dash_table.DataTable(
+                                    id="lin-history-table",
+                                    columns=[],
+                                    data=[],
+                                    # Not virtualized: the two clientside repaint
+                                    # workarounds the Data Table needs are
+                                    # virtualization bugs, and they would bite
+                                    # harder here because lineage data arrives
+                                    # while the table is already on screen. A
+                                    # lineage is at most ~100 rows anyway.
+                                    virtualization=False,
+                                    # Not sortable: row_index in
+                                    # style_data_conditional indexes `data` as
+                                    # supplied and is not re-derived after a
+                                    # native sort, so sorting would detach every
+                                    # colour from its value. The newest-first
+                                    # order is also itself the information.
+                                    sort_action="none",
+                                    page_action="none",
+                                    fixed_rows={"headers": True},
+                                    fixed_columns={"headers": True, "data": 2},
+                                    tooltip_data=[],
+                                    tooltip_duration=None,
+                                    style_table={
+                                        "maxHeight": _LIN_VIEW_H,
+                                        "overflowY": "auto",
+                                        "overflowX": "auto",
+                                        "minWidth": "100%",
+                                    },
+                                    style_cell=dict(
+                                        backgroundColor="#16213e",
+                                        color=TEXT,
+                                        fontSize="11px",
+                                        padding="3px 10px",
+                                        border="1px solid #2a2a4a",
+                                        minWidth="90px",
+                                        maxWidth="200px",
+                                        whiteSpace="nowrap",
+                                        overflow="hidden",
+                                        textOverflow="ellipsis",
+                                    ),
+                                    style_header=dict(
+                                        backgroundColor=PANEL_BG,
+                                        color=ACCENT,
+                                        fontWeight="600",
+                                        fontSize="11px",
+                                        border="1px solid #2a2a4a",
+                                    ),
+                                    style_data_conditional=[],
+                                ),
+                            ],
+                        ),
+                        _lin_subtab(
+                            "Notes",
+                            "lin-notes",
+                            [
+                                html.Div(
+                                    id="lin-notes-panel",
+                                    style=dict(maxHeight=_LIN_VIEW_H, overflowY="auto", padding="8px 2px"),
+                                )
+                            ],
+                        ),
+                        _lin_subtab(
+                            "Tree",
+                            "lin-tree",
+                            [
+                                dcc.Graph(
+                                    id="lin-tree-plot",
+                                    config=dict(displayModeBar=True, displaylogo=False),
+                                    style=dict(height=_LIN_VIEW_H, minHeight="240px"),
+                                )
+                            ],
+                        ),
+                        _lin_subtab(
+                            "Sparklines",
+                            "lin-spark",
+                            [
+                                html.Div(
+                                    style=dict(maxHeight=_LIN_VIEW_H, overflowY="auto"),
+                                    children=dcc.Graph(
+                                        id="lin-spark-plot",
+                                        config=dict(displayModeBar=False),
+                                    ),
+                                ),
+                            ],
+                            controls=[
+                                html.Div(
+                                    style=dict(
+                                        display="flex",
+                                        alignItems="flex-end",
+                                        gap="12px",
+                                        padding="8px 2px",
+                                        flexWrap="wrap",
+                                    ),
+                                    children=[
+                                        html.Div(
+                                            style=dict(flex="1", minWidth="260px"),
+                                            children=[
+                                                html.Label("Visualise", style=_CLUSTER_LABEL_STYLE),
+                                                dcc.Dropdown(
+                                                    id="lin-spark-columns",
+                                                    options=[],
+                                                    value=[],
+                                                    multi=True,
+                                                    placeholder="Type to search variables…",
+                                                    style=dict(DROPDOWN_STYLE, width="100%"),
+                                                ),
+                                            ],
+                                        ),
+                                        html.Button(
+                                            f"Top {_LIN_SPARK_PANELS}",
+                                            id="lin-spark-top-btn",
+                                            n_clicks=0,
+                                            style=_BTN_STYLE_SECONDARY,
+                                        ),
+                                        html.Div(
+                                            id="lin-spark-msg",
+                                            style=dict(fontSize="10px", color="#888", paddingBottom="4px"),
+                                        ),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+    ]
+
+
 # Scatter Graph height — fills viewport minus header + tab bar + controls + padding
 _SCATTER_H = "calc(100vh - 183px)"
 
@@ -1339,6 +2278,19 @@ app.layout = html.Div(
         dcc.Store(id="_table_scroll_sink"),
         dcc.Store(id="_table_repaint_sink"),
         dcc.Store(id="ref-graph-enabled", data=False),
+        # Subject shot for the Lineage tab: the selected shot, or the latest
+        # shot when nothing is selected. Resolved centrally so every Lineage
+        # view agrees, and declared unconditionally so the callback that
+        # writes it can fire before the tab has ever been opened — a callback
+        # whose Output is not in the rendered tree is never dispatched.
+        dcc.Store(id="lin-subject-shot", data=None),
+        # What the Sparklines view last seeded into its own variable selector.
+        # Comparing against it is what separates "the app filled this in" from
+        # "someone chose this", so a new subject can refresh the default
+        # without discarding a hand-picked set. Declared here rather than in
+        # the tab because dcc.Tabs unmounts the tab it is not showing, and an
+        # unmounted Store forgets.
+        dcc.Store(id="lin-spark-seeded", data=None),
         dcc.Store(id="cluster-labels", data=None),
         dcc.Store(id="cluster-representatives", data=None),
         dcc.Store(id="cluster-names", data={}),
@@ -2889,6 +3841,24 @@ app.layout = html.Div(
                                         ),
                                     ],
                                 ),
+                                # -- Lineage tab (requires reference_shot_col) --
+                                *(
+                                    [
+                                        dcc.Tab(
+                                            label="Lineage",
+                                            value="lineage",
+                                            style=dict(color=TEXT, backgroundColor=PANEL_BG),
+                                            selected_style=dict(
+                                                color=ACCENT,
+                                                backgroundColor=DARK_BG,
+                                                borderTop=f"2px solid {ACCENT}",
+                                            ),
+                                            children=_lineage_tab_children(),
+                                        )
+                                    ]
+                                    if SHOW_REF_TOGGLE
+                                    else []
+                                ),
                                 # -- Configuration tab --
                                 dcc.Tab(
                                     label="Configuration",
@@ -3158,6 +4128,164 @@ def _empty_fig(message: str) -> go.Figure:
         plot_bgcolor="#16213e",
         margin=dict(l=50, r=30, t=40, b=50),
     )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Lineage tab — figure builders
+# ---------------------------------------------------------------------------
+
+
+def _lin_tree_fig(matrix, ref_parent: dict[int, int], subject: int) -> go.Figure:
+    """Node-link timeline of the lineage: shot ID across, generation down.
+
+    Shares ``_ref_shot_color`` with the scatter-plot overlay, so the same shot
+    is the same colour in both reference views.
+    """
+    ids = list(matrix.shot_ids)
+    if len(ids) <= 1:
+        return _empty_fig("Only one shot in this lineage")
+
+    # Generation = distance from the oldest ancestor reachable inside the
+    # lineage, so a branch and its siblings sit on different rows.
+    in_lineage = set(ids)
+    depth: dict[int, int] = {}
+
+    def _depth(shot: int, seen: frozenset[int] = frozenset()) -> int:
+        if shot in depth:
+            return depth[shot]
+        parent = ref_parent.get(shot)
+        if parent is None or parent not in in_lineage or shot in seen:
+            depth[shot] = 0
+        else:
+            depth[shot] = _depth(parent, seen | {shot}) + 1
+        return depth[shot]
+
+    for shot in ids:
+        _depth(shot)
+
+    lo, hi = min(ids), max(ids)
+    fig = go.Figure()
+    for shot in ids:
+        parent = ref_parent.get(shot)
+        if parent is None or parent not in in_lineage:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=[parent, shot],
+                y=[depth[parent], depth[shot]],
+                mode="lines",
+                line=dict(color=_ref_shot_color(min(shot, parent), lo, hi), width=2, dash="dot"),
+                showlegend=False,
+                hoverinfo="skip",
+                name="_lin_edge",
+            )
+        )
+
+    others = [s for s in ids if s != subject]
+    if others:
+        fig.add_trace(
+            go.Scatter(
+                x=others,
+                y=[depth[s] for s in others],
+                mode="markers+text",
+                marker=dict(
+                    size=13,
+                    color=[_ref_shot_color(s, lo, hi) for s in others],
+                    line=dict(color="rgba(0,0,0,0.4)", width=1),
+                ),
+                text=[str(s) for s in others],
+                textposition="top center",
+                textfont=dict(size=9, color="#888"),
+                # _extract_shot_id reads hovertext first, so this is what makes
+                # clicking a node select that shot everywhere else.
+                hovertext=[str(s) for s in others],
+                hovertemplate="shot %{hovertext}<extra></extra>",
+                showlegend=False,
+                name="_lin_nodes",
+            )
+        )
+    fig.add_trace(
+        go.Scatter(
+            x=[subject],
+            y=[depth.get(subject, 0)],
+            mode="markers+text",
+            marker=dict(size=18, color=ACCENT, symbol="star", line=dict(color="#fff", width=1)),
+            text=[str(subject)],
+            textposition="top center",
+            textfont=dict(size=10, color=TEXT),
+            hovertext=[str(subject)],
+            hovertemplate="shot %{hovertext} (subject)<extra></extra>",
+            showlegend=False,
+            name="_lin_subject",
+        )
+    )
+
+    # _SCATTER_LAYOUT already carries xaxis/yaxis, so the axis titles go on
+    # afterwards rather than as duplicate update_layout keywords.
+    fig.update_layout(**_SCATTER_LAYOUT)
+    fig.update_xaxes(title="shot ID")
+    fig.update_yaxes(title="generation", autorange="reversed", showticklabels=False)
+    return fig
+
+
+def _lin_spark_fig(matrix, columns: list[str], subject: int) -> go.Figure:
+    """Small multiples: each variable's value across the lineage, oldest first.
+
+    Ordered most-changed first, so the panels that answer the question come
+    before the ones that do not.
+    """
+    if not columns:
+        return _empty_fig("Select at least one variable")
+    numeric = [c for c in columns if matrix.kinds.get(c) == "numeric"]
+    if not numeric:
+        return _empty_fig("Sparklines need at least one numeric variable")
+
+    # Oldest -> newest reads left to right, which is how a trend is read.
+    order = list(reversed(matrix.shot_ids))
+    cols = 2
+    rows = math.ceil(len(numeric) / cols)
+    fig = make_subplots(
+        rows=rows,
+        cols=cols,
+        shared_xaxes=False,
+        vertical_spacing=min(0.08, 0.6 / max(rows, 1)),
+        horizontal_spacing=0.10,
+        subplot_titles=numeric,
+    )
+    for i, col in enumerate(numeric):
+        row, column = divmod(i, cols)
+        series = pd.to_numeric(matrix.values.loc[order, col], errors="coerce")
+        fig.add_trace(
+            go.Scatter(
+                x=[str(s) for s in order],
+                y=series.to_numpy(dtype=float),
+                mode="lines+markers",
+                line=dict(color=ACCENT, width=1.5),
+                marker=dict(
+                    size=[11 if s == subject else 6 for s in order],
+                    color=[ACCENT if s == subject else "#4488cc" for s in order],
+                    symbol=["star" if s == subject else "circle" for s in order],
+                ),
+                showlegend=False,
+                hovertemplate="shot %{x}<br>%{y:.4g}<extra></extra>",
+                name=col,
+            ),
+            row=row + 1,
+            col=column + 1,
+        )
+    fig.update_layout(
+        paper_bgcolor=DARK_BG,
+        plot_bgcolor="#16213e",
+        font=dict(color=TEXT, size=10),
+        margin=dict(l=50, r=20, t=30, b=30),
+        height=max(300, 130 * rows),
+    )
+    fig.update_xaxes(gridcolor="#2a2a4a", tickfont=dict(size=8), showticklabels=True)
+    fig.update_yaxes(gridcolor="#2a2a4a", tickfont=dict(size=8))
+    for annotation in fig.layout.annotations:
+        annotation.font.size = 10
+        annotation.font.color = ACCENT
     return fig
 
 
@@ -4125,6 +5253,447 @@ def update_correlation(features, active_filters, variable):
         yaxis=dict(tickfont=dict(size=10), autorange="reversed"),
     )
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Lineage tab callbacks — registered only when a reference column exists,
+# exactly like toggle_ref_graph above.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _LineageView:
+    """Everything the Lineage views need, resolved once per callback."""
+
+    ds: Dataset
+    subject: int
+    lineage: list[int]
+    matrix: Any
+    columns: list[str]
+    compare_cols: list[str]
+
+
+def _lin_candidates(ds: Dataset | None) -> list[str]:
+    """Comparison columns for this dataset, or the startup fallback.
+
+    Taken from the Dataset rather than a module global so long-format mode gets
+    the columns of the variable actually loaded.
+    """
+    if ds is None or not ds.ref_compare_cols:
+        return list(_lin_fallback_cols)
+    return list(ds.ref_compare_cols)
+
+
+def _lin_option_pool(candidates: list[str], selected, search_value) -> list[dict]:
+    """A searchable slice of *candidates*, never the whole list.
+
+    The current selection is always included. Dash clears a value that is
+    absent from ``options``, so leaving it out would wipe the user's picks the
+    moment they typed in the box.
+    """
+    keep = [c for c in (selected or []) if c in set(candidates)]
+    if not search_value:
+        rest = [c for c in candidates if c not in set(keep)]
+        pool = keep + rest[:_LIN_OPTION_LIMIT]
+    else:
+        query = str(search_value).lower()
+        hits = [c for c in candidates if query in c.lower()][:_LIN_OPTION_LIMIT]
+        pool = sorted(set(keep) | set(hits))
+    return [{"label": c, "value": c} for c in pool]
+
+
+def _lin_projection_features(ds: Dataset | None) -> list[str]:
+    """The projection's own feature columns, in projection order.
+
+    These are the variables the embedding is built from, so they are the ones
+    a lineage is worth tracking: they are what makes two shots near or far
+    apart on the scatter plot. Filtered against the comparison candidates,
+    because a feature the tab cannot compare must not be offered.
+    """
+    candidates = set(_lin_candidates(ds))
+    features = list(ds.search_cols) if ds is not None and ds.search_cols else list(UMAP_FEATURES or numeric_cols)
+    return [c for c in features if c in candidates]
+
+
+def _lin_resolve(
+    variable,
+    subject,
+    scope,
+    metric,
+    respect,
+    active_filters,
+    columns=None,
+) -> tuple[_LineageView | None, str | None]:
+    """Resolve the lineage and change matrix, or explain why there is none.
+
+    Pass ``columns=None`` to compare every candidate column — the ranked card
+    does that, so its "N of M changed" tally describes the whole table rather
+    than whichever subset the user happens to have selected.
+    """
+    ds = get_dataset(variable)
+    if ds is None:
+        return None, SELECT_VARIABLE_MSG
+    if subject is None:
+        return None, "Select a shot, or wait for the first shot to load"
+    subject = int(subject)
+    if not (ds.df["shot_id"].astype(int) == subject).any():
+        return None, f"Shot {subject} is not in the loaded data"
+    if subject not in ds.ref_adjacency:
+        return None, f"Shot {subject} has no reference shot — nothing to compare"
+
+    # Filters never drop a lineage shot: removing one would silently turn
+    # "change vs the previous shot" into a comparison between two shots that
+    # were never linked. Opting in marks them instead.
+    restrict = set(active_filters) if ("respect" in (respect or []) and active_filters is not None) else None
+    lineage, excluded = get_reference_lineage(
+        subject,
+        ds.ref_parent,
+        ds.ref_adjacency,
+        scope=scope or "chain",
+        restrict_to=restrict,
+    )
+    if len(lineage) <= 1:
+        return None, f"Shot {subject} is the only shot in this lineage"
+
+    compare = _lin_candidates(ds)
+    if columns is None:
+        chosen = compare
+    else:
+        available = set(compare)
+        chosen = [c for c in (columns or []) if c in available]
+        if not chosen:
+            return None, "Select at least one variable"
+
+    matrix = lineage_change_matrix(
+        ds.df,
+        lineage,
+        chosen,
+        metric=metric or "zscore",
+        stds=ds.ref_stds,
+        numeric_cols=list(ds.ref_numeric_cols) or None,
+        excluded=excluded,
+    )
+    return _LineageView(ds, subject, lineage, matrix, chosen, compare), None
+
+
+def _lin_card_ranked_columns(variable, subject, scope, metric, limit: int | None = None) -> list[str]:
+    """The numeric variables in the order the summary card lists them.
+
+    Reads the card's own ranking rather than a second one, so a view seeded
+    from it opens on the variables the card puts at the top. Text columns are
+    left out: they rank in the card but cannot be drawn as a line.
+    """
+    view, _message = _lin_resolve(variable, subject, scope, metric, [], None)
+    if view is None:
+        return []
+    ranked = rank_lineage_changes(view.matrix, top_n=None, changed_only=False)
+    numeric = [item.column for item in ranked if item.kind == "numeric"]
+    return numeric[:limit] if limit else numeric
+
+
+def _lin_default_columns(variable, subject, scope, metric) -> list[str]:
+    """The columns that actually changed, most-changed first.
+
+    A static default cannot work here: with hundreds of columns it would mostly
+    show variables that did not move, so the first render would fail to answer
+    the tab's question.
+    """
+    view, _ = _lin_resolve(variable, subject, scope, metric, [], None, columns=None)
+    if view is None:
+        return _lin_candidates(get_dataset(variable))[:_LIN_DEFAULT_N]
+    picked = select_changed_columns(view.matrix, max_columns=_LIN_DEFAULT_N)
+    return picked or view.compare_cols[:_LIN_DEFAULT_N]
+
+
+@app.callback(
+    Output("lin-subject-shot", "data"),
+    Input("selected-shot", "data"),
+    Input("latest-shot", "data"),
+    Input("selected-variable", "data"),
+    Input("dataset-version", "data"),
+)
+def resolve_lineage_subject(selected_shot, latest_shot, variable, _dataset_version):
+    """Pick the shot the Lineage tab describes.
+
+    Its only Output is a store in the root layout, so this fires on initial
+    load — a callback whose Output sits inside an unopened tab never would, and
+    the tab would then open with no subject.
+    """
+    ds = get_dataset(variable)
+    if ds is None or ds.df.empty:
+        return None
+    present = set(ds.df["shot_id"].astype(int))
+    for candidate in (selected_shot, latest_shot):
+        if candidate is not None and int(candidate) in present:
+            return int(candidate)
+    return None
+
+
+if SHOW_REF_TOGGLE:
+
+    @app.callback(
+        Output("lin-subject-display", "children"),
+        Input("lin-subject-shot", "data"),
+        Input("lin-scope", "value"),
+        Input("selected-variable", "data"),
+        Input("dataset-version", "data"),
+        State("selected-shot", "data"),
+    )
+    def update_lineage_subject_display(subject, scope, variable, _dataset_version, selected_shot):
+        ds = get_dataset(variable)
+        if ds is None:
+            return SELECT_VARIABLE_MSG
+        if subject is None:
+            return "No shot selected, and no shots loaded yet"
+        subject = int(subject)
+        origin = "selected" if selected_shot is not None and int(selected_shot) == subject else "latest"
+        if subject not in ds.ref_adjacency:
+            return f"Subject: shot {subject} ({origin}) — no reference shot"
+        lineage, excluded = get_reference_lineage(subject, ds.ref_parent, ds.ref_adjacency, scope=scope or "chain")
+        text = f"Subject: shot {subject} ({origin}) — {len(lineage)} shots in lineage"
+        reference = ds.ref_parent.get(subject)
+        if reference is not None:
+            text += f", reference {reference}"
+        return text
+
+    @app.callback(
+        Output("lin-columns-dd", "options"),
+        Input("lin-columns-dd", "search_value"),
+        Input("selected-variable", "data"),
+        State("lin-columns-dd", "value"),
+    )
+    def update_lineage_column_options(search_value, variable, selected):
+        """Offer a searchable slice of the comparison columns."""
+        return _lin_option_pool(_lin_candidates(get_dataset(variable)), selected, search_value)
+
+    @app.callback(
+        Output("lin-columns-dd", "value"),
+        Input("lin-cols-changed-btn", "n_clicks"),
+        Input("lin-cols-features-btn", "n_clicks"),
+        Input("lin-cols-clear-btn", "n_clicks"),
+        Input("lin-subject-shot", "data"),
+        Input("lin-scope", "value"),
+        Input("selected-variable", "data"),
+        State("lin-metric", "value"),
+        State("lin-columns-dd", "value"),
+    )
+    def seed_lineage_columns(_changed, _features, _clear, subject, scope, variable, metric, current):
+        """Seed the selector with every projection feature, and leave a hand-picked selection alone.
+
+        The projection features are the default because they are the variables
+        the embedding — and therefore the whole dashboard's notion of "similar
+        shot" — is built from: a lineage is worth tracking in exactly those.
+        All of them, not a truncated head, because a silently shortened default
+        reads as "these are the features".
+
+        Re-seeding on every click would discard the columns the user chose,
+        which makes the tab unusable for comparing one variable across shots.
+        """
+        triggered = dash.ctx.triggered_id
+        if triggered == "lin-cols-clear-btn":
+            return []
+        if triggered == "lin-cols-features-btn":
+            return _lin_projection_features(get_dataset(variable))
+        if triggered == "lin-cols-changed-btn":
+            return _lin_default_columns(variable, subject, scope, metric)
+        if current:
+            return dash.no_update
+        return _lin_projection_features(get_dataset(variable)) or _lin_default_columns(variable, subject, scope, metric)
+
+    @app.callback(
+        Output("lin-columns-count", "children"),
+        Input("lin-columns-dd", "value"),
+        Input("selected-variable", "data"),
+    )
+    def update_lineage_column_count(columns, variable):
+        return f"{len(columns or [])} of {len(_lin_candidates(get_dataset(variable)))} variables"
+
+    @app.callback(
+        Output("lin-change-cards", "children"),
+        Input("lin-subject-shot", "data"),
+        Input("lin-scope", "value"),
+        Input("lin-card-metric", "value"),
+        Input("lin-respect-filters", "value"),
+        Input("active-filters", "data"),
+        Input("selected-variable", "data"),
+        Input("dataset-version", "data"),
+    )
+    def update_lineage_cards(subject, scope, card_metric, respect, active_filters, variable, _dataset_version):
+        """The summary card: every variable, biggest change first.
+
+        Built over every candidate column rather than the user's selection, so
+        it summarises the whole table and the tally underneath means what it
+        says. Unchanged variables are kept: they land at the end of the
+        ranking, where they answer "did anything else move" without the reader
+        having to widen the selection to find out.
+
+        Ranked by its own measure, not the history table's colour metric —
+        "what moved most" is a different question, and only a measure that is
+        comparable between columns can answer it.
+        """
+        view, message = _lin_resolve(variable, subject, scope, card_metric, respect, active_filters)
+        if view is None:
+            return _lin_message(message or "")
+        items = rank_lineage_changes(view.matrix, top_n=_LIN_CARD_MAX, changed_only=False)
+        return _lin_render_change_cards(view.matrix, items, view.subject, len(view.compare_cols))
+
+    @app.callback(
+        Output("lin-history-table", "data"),
+        Output("lin-history-table", "columns"),
+        Output("lin-history-table", "style_data_conditional"),
+        Output("lin-history-table", "tooltip_data"),
+        Output("lin-history-msg", "children"),
+        Input("lin-subject-shot", "data"),
+        Input("lin-scope", "value"),
+        Input("lin-metric", "value"),
+        Input("lin-columns-dd", "value"),
+        Input("lin-respect-filters", "value"),
+        Input("active-filters", "data"),
+        Input("selected-variable", "data"),
+        Input("dataset-version", "data"),
+    )
+    def update_lineage_history(subject, scope, metric, columns, respect, active_filters, variable, _dataset_version):
+        view, message = _lin_resolve(variable, subject, scope, metric, respect, active_filters, columns=columns or [])
+        if view is None:
+            return [], [], [], [], _lin_message(message or "")
+
+        matrix = view.matrix
+        notes = [f"{len(matrix.columns)} variable(s) shown; scroll sideways for more"]
+        if matrix.excluded:
+            notes.append(f"{len(matrix.excluded)} lineage shot(s) hidden by the active filters, shown in grey")
+        if matrix.metric == "absolute":
+            notes.append("colour is scaled to this lineage only")
+        return (
+            _lin_table_data(matrix, matrix.columns, view.subject),
+            _lin_table_columns(matrix.columns, matrix.kinds),
+            _lin_style_data_conditional(matrix, matrix.columns, view.subject),
+            _lin_tooltip_data(matrix, matrix.columns),
+            html.Div("  ·  ".join(notes), style=dict(fontSize="10px", color="#888", padding="4px 2px")),
+        )
+
+    @app.callback(
+        Output("lin-notes-panel", "children"),
+        Input("lin-subject-shot", "data"),
+        Input("lin-scope", "value"),
+        Input("selected-variable", "data"),
+        Input("dataset-version", "data"),
+    )
+    def update_lineage_notes(subject, scope, variable, _dataset_version):
+        """The operator's own notes for each shot in the lineage."""
+        view, message = _lin_resolve(variable, subject, scope, "zscore", [], None)
+        if view is None:
+            return _lin_message(message or "")
+        note_cols = _lin_note_columns(view.compare_cols, view.ds.ref_numeric_cols)
+        return _lin_notes_table(view.ds.df, view.lineage, view.subject, note_cols)
+
+    @app.callback(
+        Output("lin-tree-plot", "figure"),
+        Input("lin-subject-shot", "data"),
+        Input("lin-scope", "value"),
+        Input("lin-respect-filters", "value"),
+        Input("active-filters", "data"),
+        Input("selected-variable", "data"),
+        Input("dataset-version", "data"),
+    )
+    def update_lineage_tree(subject, scope, respect, active_filters, variable, _dataset_version):
+        view, message = _lin_resolve(variable, subject, scope, "zscore", respect, active_filters)
+        if view is None:
+            return _empty_fig(message or "")
+        return _lin_tree_fig(view.matrix, view.ds.ref_parent, view.subject)
+
+    @app.callback(
+        Output("lin-spark-columns", "options"),
+        Input("lin-spark-columns", "search_value"),
+        Input("selected-variable", "data"),
+        State("lin-spark-columns", "value"),
+    )
+    def update_lineage_spark_options(search_value, variable, selected):
+        """Offer the same searchable column pool as the tab's own selector."""
+        return _lin_option_pool(_lin_candidates(get_dataset(variable)), selected, search_value)
+
+    @app.callback(
+        Output("lin-spark-columns", "value"),
+        Output("lin-spark-seeded", "data"),
+        Input("lin-spark-top-btn", "n_clicks"),
+        Input("lin-subject-shot", "data"),
+        Input("lin-scope", "value"),
+        Input("lin-card-metric", "value"),
+        Input("selected-variable", "data"),
+        State("lin-spark-columns", "value"),
+        State("lin-spark-seeded", "data"),
+    )
+    def seed_lineage_spark_columns(_top, subject, scope, card_metric, variable, current, seeded):
+        """Open on the summary card's top variables, and keep a hand-picked set.
+
+        The card is already the answer to "what moved", so the panels start on
+        the head of that same ranking and the two views agree on the first
+        screen. That default depends on the subject, so it has to be refreshed
+        when the subject changes — but only while it is still the default:
+        comparing the selection against the last seeded value is what tells a
+        selection the app filled in from one somebody chose, and a chosen
+        variable must survive a click on another shot. The button re-seeds
+        either way.
+        """
+        if dash.ctx.triggered_id != "lin-spark-top-btn" and current and list(current) != list(seeded or []):
+            return dash.no_update, dash.no_update
+        picked = _lin_card_ranked_columns(variable, subject, scope, card_metric, _LIN_SPARK_PANELS)
+        return picked, picked
+
+    @app.callback(
+        Output("lin-spark-plot", "figure"),
+        Output("lin-spark-msg", "children"),
+        Input("lin-subtabs", "value"),
+        Input("lin-subject-shot", "data"),
+        Input("lin-scope", "value"),
+        Input("lin-card-metric", "value"),
+        Input("lin-spark-columns", "value"),
+        Input("selected-variable", "data"),
+        Input("dataset-version", "data"),
+    )
+    def update_lineage_sparklines(subtab, subject, scope, card_metric, columns, variable, _dataset_version):
+        """One panel per variable chosen for this view, in the card's order.
+
+        The panels are the selection — every variable in it, ordered the way
+        the summary card ranks them. Ranking columns out of a view the user
+        selected by hand would make it disagree with its own selector, and
+        "this one held still" is itself an answer.
+        """
+        if subtab != "lin-spark":
+            return dash.no_update, dash.no_update
+        view, message = _lin_resolve(variable, subject, scope, card_metric, [], None, columns=columns or [])
+        if view is None:
+            return _empty_fig(message or ""), ""
+        selected = list(view.matrix.columns)
+        ranked = [item.column for item in rank_lineage_changes(view.matrix, top_n=None, changed_only=False)]
+        ranked = ranked or selected  # a lineage of one has nothing to rank
+        drawn = [c for c in ranked if view.matrix.kinds.get(c) == "numeric"]
+        capped = drawn[:_LIN_SPARK_HARD_MAX]
+        notes = [f"{len(capped)} of {len(selected)} selected variable(s) drawn"]
+        if len(capped) < len(drawn):
+            notes.append(f"at most {_LIN_SPARK_HARD_MAX} panels are drawn — narrow the selection")
+        n_text = len(selected) - len(drawn)
+        if n_text:
+            notes.append(f"{n_text} text variable(s) have no sparkline")
+        return _lin_spark_fig(view.matrix, capped, view.subject), "  ·  ".join(notes)
+
+    @app.callback(
+        Output("selected-shot", "data", allow_duplicate=True),
+        Input("lin-tree-plot", "clickData"),
+        State("selected-variable", "data"),
+        prevent_initial_call=True,
+    )
+    def select_shot_from_lineage_tree(click_data, variable):
+        """Clicking a lineage node selects that shot everywhere else.
+
+        Needs allow_duplicate because update_selected_shot already owns this
+        Output, and it cannot take the tree as an Input: that callback is
+        registered unconditionally, and Dash rejects an Input naming a
+        component that is absent when no reference column is configured.
+        """
+        ds = get_dataset(variable)
+        if ds is None:
+            return dash.no_update
+        return _extract_shot_id(ds.df, click_data) or dash.no_update
 
 
 # ---------------------------------------------------------------------------
