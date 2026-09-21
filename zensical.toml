@@ -13,3 +13,6 @@ Configuration = "configuration.md"
 
 [[project.nav]]
 "Data Formats" = "data-formats.md"
+
+[[project.nav]]
+Classification = "classification.md"

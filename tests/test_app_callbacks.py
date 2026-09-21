@@ -14,6 +14,11 @@ shot_id 2000..2015 and two numeric feature columns.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
+import dash
 import numpy as np
 import pandas as pd
 import pytest
@@ -56,6 +61,11 @@ def test_update_umap_returns_figure_with_expected_points(app_module):
         None,  # cluster_labels
         None,  # cluster_names
         None,  # outlier_labels
+        None,  # class_labels
+        None,  # class_proba
+        None,  # class_model
+        [],  # show_surface
+        None,  # surface_class
         None,  # search_results
         False,  # search_highlight_enabled
         None,  # latest_shot
@@ -68,7 +78,7 @@ def test_update_umap_returns_figure_with_expected_points(app_module):
 
 
 def test_download_table_produces_csv_payload(app_module):
-    result = app_module.download_table(1, None, None, None)
+    result = app_module.download_table(1, None, None, None, None, None, None)
     assert result["filename"] == "niceshot_export.csv"
 
 
@@ -918,7 +928,7 @@ def test_a_new_dataset_key_clears_results_built_from_the_old_one(app_module):
     """Cluster labels, outliers and similar-shot lists all describe coordinates
     that a new projection has moved."""
     cleared = app_module.clear_results_on_new_dataset({"variable": None})
-    assert cleared == (None, None, {}, None, None, None, None, None, None, None)
+    assert cleared == (None, None, {}, None, None, None, None, None, None, None, None, None, None)
 
 
 def test_the_summary_table_drops_the_settings_the_tab_now_owns(app_module):
@@ -970,6 +980,38 @@ def test_the_projection_plot_is_covered_by_a_spinner(app_module):
     # readable while the new one is calculated.
     assert spinner.overlay_style == {"visibility": "visible", "opacity": 0.35}
     assert spinner.children.id == "umap-plot"
+
+
+def test_the_pairwise_scatter_is_covered_by_a_spinner(app_module):
+    """Changing an axis, its scale or a filter rebuilds the decision surface,
+    which is slow enough that the tab looks stuck without this."""
+    from conftest import _walk, find_tab, layout_of
+
+    tab = find_tab(layout_of(app_module), "pair")
+    spinners = [
+        node
+        for node in _walk(tab)
+        if type(node).__name__ == "Loading" and (node.target_components or {}).get("pair-plot") == "figure"
+    ]
+    assert len(spinners) == 1
+    spinner = spinners[0]
+    assert spinner.delay_show == app_module._SPINNER_DELAY
+    assert spinner.overlay_style == {"visibility": "visible", "opacity": 0.35}
+    assert spinner.children.id == "pair-plot"
+
+
+def test_the_classification_tab_is_covered_by_a_spinner(app_module):
+    """Training blocks for seconds, so the status span it writes is the target."""
+    from conftest import _walk, find_tab, layout_of
+
+    tab = find_tab(layout_of(app_module), "classification")
+    spinners = [
+        node
+        for node in _walk(tab)
+        if type(node).__name__ == "Loading" and (node.target_components or {}).get("classify-status") == "children"
+    ]
+    assert len(spinners) == 1
+    assert spinners[0].delay_show == app_module._SPINNER_DELAY
 
 
 # ---------------------------------------------------------------------------
@@ -1071,3 +1113,398 @@ def test_apply_works_with_no_option_rows(app_module):
     result = _apply(app_module, option_keys=[], option_values=[])
     assert result[3] == {"value": {}}
     assert "Applied" in result[-1]
+
+
+# ---------------------------------------------------------------------------
+# Classification
+#
+# These use app_variant rather than app_module: write_shot_table() gives a
+# "scenario" column with two classes, which app_module's synthetic frame has
+# no equivalent of.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def classify_module(app_variant):
+    return app_variant("classify", {"projection_method": "pca"})
+
+
+def _train(module, algorithm="random_forest", target="scenario", features=("feature_1", "feature_2")):
+    return module.run_classification(
+        1,  # n_clicks
+        algorithm,
+        target,
+        list(features),
+        0.25,  # test_fraction
+        42,  # seed
+        20,  # n_estimators
+        3,  # max_depth
+        0.1,  # learning_rate
+        1.0,  # subsample
+        1,  # min_samples_leaf
+        [],  # balanced
+        "rbf",  # gp_kernel
+        1.0,  # gp_length_scale
+        0,  # gp_restarts
+        2000,  # max_train_rows
+        None,  # variable
+    )
+
+
+def test_run_classification_predicts_every_shot_and_switches_the_colouring(classify_module):
+    labels, proba, model, msg, umap_color, pair_color = _train(classify_module)
+    assert set(labels) == {str(sid) for sid in range(4000, 4012)}
+    assert set(labels.values()) <= {"H-mode", "L-mode"}
+    assert model["classes"] == ["H-mode", "L-mode"]
+    assert model["target"] == "scenario"
+    assert len(proba["values"]) == 12
+    assert umap_color == classify_module._CLASS_COLOR_VALUE
+    assert pair_color == classify_module._CLASS_COLOR_VALUE
+    assert "class(es)" in msg and "acc" in msg
+
+
+def test_the_fitted_model_stays_on_the_server(classify_module):
+    """The store carries a token; the estimator itself is never serialised to the browser."""
+    _, _, model, _, _, _ = _train(classify_module)
+    assert set(model) == {"token", "classes", "features", "target", "algorithm"}
+    entry = classify_module._model_get(model["token"])
+    assert entry is not None and entry["model"]
+    assert classify_module._model_get("not-a-token") is None
+
+
+def _forget_in_process_caches(module):
+    """Act as a gunicorn worker that did not serve the training request.
+
+    Only the in-process dictionaries are dropped. The shared directory stays,
+    exactly as a sibling worker would find it.
+    """
+    module._model_cache.clear()
+    module._surface_cache.clear()
+
+
+def test_another_worker_can_explain_a_shot_with_a_model_it_did_not_train(classify_module):
+    """gunicorn serves the SHAP request from whichever worker is free."""
+    _, _, model, _, _, _ = _train(classify_module)
+    _forget_in_process_caches(classify_module)
+
+    entry = classify_module._model_get(model["token"])
+    assert entry is not None
+    assert entry["classes"] == model["classes"]
+    assert entry["features"] == model["features"]
+    assert entry["row_of"]
+
+
+def test_another_worker_reuses_the_surface_grid_instead_of_recomputing_it(classify_module):
+    """A click is served by any worker, and must not recompute the surface."""
+    _, proba, model, _, _, _ = _train(classify_module)
+    df = classify_module.get_dataset(None).df
+    first = classify_module._surface_grid(df, proba, model, "feature_1", "feature_2", 1)
+    assert first is not None
+
+    _forget_in_process_caches(classify_module)
+    calls = []
+    real = classify_module.decision_surface
+
+    def counted(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+
+    classify_module.decision_surface = counted
+    try:
+        again = classify_module._surface_grid(df, proba, model, "feature_1", "feature_2", 1)
+    finally:
+        classify_module.decision_surface = real
+
+    assert calls == []
+    assert again is not None
+    assert again["z"] == first["z"]
+
+
+def test_the_shot_fingerprint_is_the_same_in_every_process(classify_module):
+    """The grid key becomes a shared filename, so a salted hash would not do."""
+    df = classify_module.get_dataset(None).df
+    fingerprint = classify_module._shot_fingerprint(df)
+    code = (
+        "import hashlib, numpy as np, pandas as pd;"
+        f"ids = {list(df['shot_id'].astype(int))};"
+        "print(hashlib.blake2b("
+        "np.ascontiguousarray(pd.Series(ids).astype('int64').values).tobytes(), digest_size=16).hexdigest())"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONHASHSEED": "1"},
+        check=True,
+    )
+    assert out.stdout.strip() == fingerprint
+
+
+def test_dropping_a_model_drops_its_shared_grids(classify_module):
+    _, proba, model, _, _, _ = _train(classify_module)
+    df = classify_module.get_dataset(None).df
+    classify_module._surface_grid(df, proba, model, "feature_1", "feature_2", 1)
+    token = model["token"]
+    assert classify_module._shared_names(f"surface-{token}-")
+
+    classify_module._surface_cache_drop(token)
+    assert classify_module._shared_names(f"surface-{token}-") == []
+
+
+@pytest.mark.parametrize(
+    ("target", "features", "expected"),
+    [
+        (None, ["feature_1"], "Select a target column"),
+        ("scenario", [], "Select at least one feature"),
+        ("scenario", ["not_a_column"], "Error:"),
+    ],
+)
+def test_run_classification_reports_bad_input_in_the_status_line(classify_module, target, features, expected):
+    labels, _, _, msg, _, _ = _train(classify_module, target=target, features=features)
+    assert expected in msg
+    assert labels is dash.no_update  # nothing published, so the old result stands
+
+
+def test_surface_class_options_default_to_the_last_class(classify_module):
+    options, value = classify_module.update_surface_class_options({"classes": ["H-mode", "L-mode"]})
+    assert [o["value"] for o in options] == ["H-mode", "L-mode"]
+    assert value == "L-mode"
+
+
+def test_surface_class_options_are_empty_without_a_model(classify_module):
+    assert classify_module.update_surface_class_options(None) == ([], None)
+
+
+def test_toggle_classify_params_shows_only_what_the_model_reads(classify_module):
+    blocks = classify_module._CLASSIFY_PARAM_BLOCKS
+    shown = dict(zip(blocks, classify_module.toggle_classify_params("gaussian_process")))
+    assert shown["classify-gp-kernel-block"] == classify_module._SHOW
+    assert shown["classify-learning-rate-block"] == classify_module._HIDE
+    shown = dict(zip(blocks, classify_module.toggle_classify_params("gradient_boosting")))
+    assert shown["classify-learning-rate-block"] == classify_module._SHOW
+    assert shown["classify-gp-kernel-block"] == classify_module._HIDE
+
+
+def test_the_pair_plot_draws_the_surface_behind_the_points(classify_module):
+    labels, proba, model, _, _, _ = _train(classify_module)
+    fig = classify_module.update_pair_plot(
+        "feature_1",  # x_col
+        "feature_2",  # y_col
+        classify_module._CLASS_COLOR_VALUE,  # color_col
+        "linear",  # x_scale
+        "linear",  # y_scale
+        None,  # active_filters
+        None,  # selected_shot
+        False,  # ref_graph_enabled
+        None,  # cluster_labels
+        None,  # cluster_names
+        None,  # outlier_labels
+        labels,
+        proba,
+        model,
+        ["surface"],  # show_surface
+        "L-mode",  # surface_class
+        None,  # search_results
+        False,  # search_highlight_enabled
+        None,  # latest_shot
+        False,  # latest_shot_highlight_enabled
+        None,  # variable
+        0,  # _dataset_version
+    )
+    assert fig.data[0].type == "heatmap"  # first, so the points sit on top of it
+    assert fig.data[0].hoverinfo == "skip"  # or it would swallow the click that selects a shot
+    assert {t.type for t in fig.data[1:]} == {"scatter"}
+    assert {name for t in fig.data[1:] for name in [t.name]} <= {"H-mode", "L-mode"}
+
+
+def _pair_with_scales(module, labels, proba, model, x_scale, y_scale, x_col="ip_max", y_col="feature_2"):
+    return module.update_pair_plot(
+        x_col,
+        y_col,
+        module._CLASS_COLOR_VALUE,
+        x_scale,
+        y_scale,
+        None,
+        None,
+        False,
+        None,
+        None,
+        None,
+        labels,
+        proba,
+        model,
+        ["surface"],
+        "L-mode",
+        None,
+        False,
+        None,
+        False,
+        None,
+        0,
+    )
+
+
+def test_a_log_axis_gets_a_log_spaced_surface(classify_module):
+    """The grid is built in the space the axis is drawn in, not stretched across it."""
+    labels, proba, model, _, _, _ = _train(classify_module)
+    fig = _pair_with_scales(classify_module, labels, proba, model, "log", "linear")
+    assert fig.data[0].type == "heatmap"
+    x = np.asarray(fig.data[0].x, dtype=float)
+    assert (x > 0).all()  # a log axis cannot show a non-positive coordinate
+    # Even in log10, so the ratio between neighbours is constant, not the gap.
+    steps = np.diff(np.log10(x))
+    assert np.allclose(steps, steps[0])
+    assert not np.allclose(np.diff(x), np.diff(x)[0])
+    # The linear axis is untouched.
+    y = np.asarray(fig.data[0].y, dtype=float)
+    assert np.allclose(np.diff(y), np.diff(y)[0])
+
+
+def test_the_surface_spans_the_plotted_points_on_a_log_axis(classify_module):
+    labels, proba, model, _, _, _ = _train(classify_module)
+    fig = _pair_with_scales(classify_module, labels, proba, model, "log", "linear")
+    x = np.asarray(fig.data[0].x, dtype=float)
+    points = np.concatenate([np.asarray(t.x, dtype=float) for t in fig.data[1:]])
+    assert x.min() <= points.min() and x.max() >= points.max()
+
+
+def test_both_axes_can_be_logarithmic(classify_module):
+    labels, proba, model, _, _, _ = _train(classify_module)
+    fig = _pair_with_scales(classify_module, labels, proba, model, "log", "log", y_col="ip_max")
+    assert fig.data[0].type == "heatmap"
+    for axis in (fig.data[0].x, fig.data[0].y):
+        steps = np.diff(np.log10(np.asarray(axis, dtype=float)))
+        assert np.allclose(steps, steps[0])
+
+
+def test_a_log_and_a_linear_surface_are_cached_apart(classify_module):
+    labels, proba, model, _, _, _ = _train(classify_module)
+    df = classify_module.get_dataset(None).df
+    classify_module._surface_cache.clear()
+    classify_module._surface_grid(df, proba, model, "ip_max", "feature_2", 1, (False, False))
+    classify_module._surface_grid(df, proba, model, "ip_max", "feature_2", 1, (True, False))
+    assert len(classify_module._surface_cache) == 2
+
+
+def test_turning_the_surface_off_leaves_only_the_points(classify_module):
+    labels, proba, model, _, _, _ = _train(classify_module)
+    fig = classify_module.update_umap(
+        classify_module._CLASS_COLOR_VALUE,
+        None,
+        None,
+        False,
+        None,
+        None,
+        None,
+        labels,
+        proba,
+        model,
+        [],
+        "L-mode",
+        None,
+        False,
+        None,
+        False,
+        None,
+        0,
+    )
+    assert "heatmap" not in {t.type for t in fig.data}
+
+
+def test_the_surface_grid_is_cached_per_plane(classify_module):
+    _, proba, model, _, _, _ = _train(classify_module)
+    df = classify_module.get_dataset(None).df
+    classify_module._surface_cache.clear()
+    first = classify_module._surface_grid(df, proba, model, "feature_1", "feature_2", 1)
+    assert first is not None
+    assert len(classify_module._surface_cache) == 1
+    assert classify_module._surface_grid(df, proba, model, "feature_1", "feature_2", 1) is first
+    # A different plane is a different question, so it is computed and kept too.
+    classify_module._surface_grid(df, proba, model, "umap_x", "umap_y", 1)
+    assert len(classify_module._surface_cache) == 2
+
+
+def test_a_filtered_frame_gets_its_own_surface_grid(classify_module):
+    """The surface is cropped to the shots on screen, so a filter is part of the key."""
+    _, proba, model, _, _, _ = _train(classify_module)
+    df = classify_module.get_dataset(None).df
+    classify_module._surface_cache.clear()
+    whole = classify_module._surface_grid(df, proba, model, "feature_1", "feature_2", 1)
+    subset = df[df["feature_1"] <= df["feature_1"].median()]
+    cropped = classify_module._surface_grid(subset, proba, model, "feature_1", "feature_2", 1)
+    assert len(classify_module._surface_cache) == 2
+    assert cropped is not whole
+    # The grid stops at the filtered data rather than spanning the full range.
+    assert max(cropped["x"]) < max(whole["x"])
+
+
+def test_the_same_shots_reached_by_a_different_filter_reuse_one_grid(classify_module):
+    _, proba, model, _, _, _ = _train(classify_module)
+    df = classify_module.get_dataset(None).df
+    classify_module._surface_cache.clear()
+    cut = df["feature_1"].median()
+    first = classify_module._surface_grid(df[df["feature_1"] <= cut], proba, model, "feature_1", "feature_2", 1)
+    ids = set(df.loc[df["feature_1"] <= cut, "shot_id"])
+    second = classify_module._surface_grid(df[df["shot_id"].isin(ids)], proba, model, "feature_1", "feature_2", 1)
+    assert second is first
+    assert len(classify_module._surface_cache) == 1
+
+
+def _umap_with(module, labels, proba, model, active_filters):
+    """update_umap for one filter selection. active-filters holds shot ids."""
+    return module.update_umap(
+        module._CLASS_COLOR_VALUE,
+        active_filters,
+        None,
+        False,
+        None,
+        None,
+        None,
+        labels,
+        proba,
+        model,
+        ["surface"],
+        "L-mode",
+        None,
+        False,
+        None,
+        False,
+        None,
+        0,
+    )
+
+
+def test_a_filter_crops_the_surface_drawn_on_the_projection(classify_module):
+    labels, proba, model, _, _, _ = _train(classify_module)
+    df = classify_module.get_dataset(None).df
+    kept = [int(s) for s in df.loc[df["umap_x"] <= df["umap_x"].median(), "shot_id"]]
+
+    unfiltered = _umap_with(classify_module, labels, proba, model, None)
+    filtered = _umap_with(classify_module, labels, proba, model, kept)
+    assert unfiltered.data[0].type == "heatmap" and filtered.data[0].type == "heatmap"
+    # Fewer points on screen, and a surface that stops where they stop.
+    assert sum(len(t.x) for t in filtered.data[1:]) < sum(len(t.x) for t in unfiltered.data[1:])
+    assert max(filtered.data[0].x) < max(unfiltered.data[0].x)
+
+
+def test_a_filter_that_keeps_too_few_shots_drops_the_surface(classify_module):
+    """Two points describe no boundary, so none is drawn rather than one invented."""
+    labels, proba, model, _, _, _ = _train(classify_module)
+    df = classify_module.get_dataset(None).df
+    fig = _umap_with(classify_module, labels, proba, model, [int(s) for s in df["shot_id"][:2]])
+    assert "heatmap" not in {t.type for t in fig.data}
+
+
+def test_a_filter_that_keeps_nothing_draws_neither_points_nor_surface(classify_module):
+    labels, proba, model, _, _, _ = _train(classify_module)
+    fig = _umap_with(classify_module, labels, proba, model, [])
+    assert "heatmap" not in {t.type for t in fig.data}
+    assert sum(len(t.x) for t in fig.data) == 0
+
+
+def test_the_export_carries_the_label_and_the_probabilities(classify_module):
+    labels, proba, model, _, _, _ = _train(classify_module)
+    payload = classify_module.download_table(1, None, None, labels, proba, model, None)
+    header = payload["content"].splitlines()[0]
+    assert "label" in header.split(",")
+    assert "p_H-mode" in header and "p_L-mode" in header

@@ -4,16 +4,20 @@ Run from project root: uv run python nice_shot/app.py
 """
 
 import argparse
+import atexit
 import hashlib
 import importlib
 import json
 import logging
 import math
 import os
+import pickle
 import re
+import shutil
 import sys
 import tempfile
 import threading
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -32,6 +36,7 @@ from pydantic import ValidationError
 
 from nice_shot.analysis import (
     ProjectionModel,
+    _apply_class_color,
     _apply_cluster_color,
     _apply_filter_mask,
     _apply_outlier_color,
@@ -41,11 +46,16 @@ from nice_shot.analysis import (
     _fit_projection,
     _is_free_text,
     _load_projection_file,
+    _run_classification,
     _run_clustering,
     _run_outlier_detection,
+    _shap_decision_values,
+    _spawn_sklearn,
     _transform_projection,
+    candidate_target_cols,
     column_stds,
     compute_active_filter_ids,
+    decision_surface,
     get_reference_graph,
     get_reference_lineage,
     is_projection_col,
@@ -840,6 +850,214 @@ def _cache_put(key: DatasetKey, ds: Dataset) -> None:
             _dataset_cache.popitem(last=False)
 
 
+# ---------------------------------------------------------------------------
+# Cross-worker cache directory
+#
+# gunicorn hands each request to whichever worker is free, so the worker that
+# trained a model is almost never the one asked to explain a shot with it. A
+# plain in-process dict therefore misses about (workers - 1) / workers of the
+# time: the SHAP pane reads "train again" at random, and a click on a plot
+# recomputes the decision surface because that worker has never drawn it.
+#
+# The directory below is a second level behind both caches. It is named once,
+# at import, which under gunicorn happens in the master before the workers are
+# forked (preload_app), so every worker inherits the same path.
+# ---------------------------------------------------------------------------
+_SHARED_CACHE_DIR = os.path.join(tempfile.gettempdir(), f"nice-shot-cache-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+_SHARED_CACHE_OWNER = os.getpid()
+
+
+def _shared_cache_cleanup() -> None:
+    """Remove the directory, but only in the process that named it.
+
+    Forked workers inherit this handler, and a worker exiting must not delete
+    the cache its siblings are still reading from.
+    """
+    if os.getpid() == _SHARED_CACHE_OWNER:
+        shutil.rmtree(_SHARED_CACHE_DIR, ignore_errors=True)
+
+
+atexit.register(_shared_cache_cleanup)
+
+
+def _shared_path(name: str) -> str:
+    return os.path.join(_SHARED_CACHE_DIR, name + ".pkl")
+
+
+def _shared_load(name: str):
+    """Read one shared entry, or None when it is absent or unreadable.
+
+    A miss is never an error: the caller recomputes, exactly as it did when
+    this level did not exist.
+    """
+    try:
+        with open(_shared_path(name), "rb") as handle:
+            return pickle.load(handle)
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        log.debug("[shared cache] could not read %s: %s", name, exc)
+        return None
+
+
+def _write_pickle(path: str, value) -> None:
+    with open(path, "wb") as handle:
+        pickle.dump(value, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _shared_store(name: str, value) -> None:
+    """Write one shared entry atomically, so a sibling worker never reads a
+    half-written pickle. Failure is logged and ignored -- the in-process dict
+    still holds the value for this worker."""
+    try:
+        os.makedirs(_SHARED_CACHE_DIR, exist_ok=True)
+        _atomic_save(_shared_path(name), lambda tmp: _write_pickle(tmp, value))
+    except Exception as exc:
+        log.debug("[shared cache] could not write %s: %s", name, exc)
+
+
+def _shared_names(prefix: str) -> list[str]:
+    try:
+        return [n[:-4] for n in os.listdir(_SHARED_CACHE_DIR) if n.startswith(prefix) and n.endswith(".pkl")]
+    except OSError:
+        return []
+
+
+def _shared_drop(name: str) -> None:
+    try:
+        os.remove(_shared_path(name))
+    except OSError:
+        pass
+
+
+def _shared_prune(prefix: str, limit: int) -> list[str]:
+    """Keep the *limit* most recently written entries under *prefix*.
+
+    Returns the names dropped, so a caller can cascade the eviction.
+    """
+    names = _shared_names(prefix)
+    if len(names) <= limit:
+        return []
+
+    def written_at(name: str) -> float:
+        try:
+            return os.path.getmtime(_shared_path(name))
+        except OSError:
+            return 0.0
+
+    doomed = sorted(names, key=written_at)[: len(names) - limit]
+    for name in doomed:
+        _shared_drop(name)
+    return doomed
+
+
+# ---------------------------------------------------------------------------
+# Trained classifier cache
+#
+# A fitted estimator is not JSON and must not be sent to the browser, so the
+# store carries an opaque token and the model itself stays here. Two are kept
+# per worker: enough that flipping back to a previous model is free, few
+# enough that a forgotten Gaussian Process cannot pin memory. The shared
+# directory holds the same two, so any worker can answer for either.
+#
+# A token that no longer resolves -- a restarted server or an eviction -- is
+# not an error. Everything that reads this cache degrades to "train again".
+# ---------------------------------------------------------------------------
+_MODEL_CACHE_MAX = 2
+_MODEL_PREFIX = "model-"
+_model_cache: OrderedDict[str, dict] = OrderedDict()
+_model_cache_lock = threading.Lock()
+
+# Surface grids, keyed by (token, x_col, y_col, class_index, shots). The last
+# part is a fingerprint of the filtered shot ids: the surface is cropped to
+# the shots on screen, so moving a filter asks a different question and gets
+# its own grid. Room for a few, because stepping a filter back and forth is
+# the usual way of reading one.
+_SURFACE_CACHE_MAX = 16
+_SURFACE_PREFIX = "surface-"
+_surface_cache: OrderedDict[tuple, dict] = OrderedDict()
+_surface_cache_lock = threading.Lock()
+
+
+def _model_remember(token: str, entry: dict) -> None:
+    """Hold *entry* in this worker's dict, evicting the least recent."""
+    evicted: list[str] = []
+    with _model_cache_lock:
+        _model_cache[token] = entry
+        _model_cache.move_to_end(token)
+        while len(_model_cache) > _MODEL_CACHE_MAX:
+            evicted.append(_model_cache.popitem(last=False)[0])
+    for gone in evicted:
+        _surface_cache_drop(gone)
+
+
+def _model_get(token: str | None) -> dict | None:
+    if not token:
+        return None
+    with _model_cache_lock:
+        entry = _model_cache.get(token)
+        if entry is not None:
+            _model_cache.move_to_end(token)
+            return entry
+    # Not this worker's model, but it may still be another's.
+    entry = _shared_load(_MODEL_PREFIX + token)
+    if entry is None:
+        return None
+    _model_remember(token, entry)
+    return entry
+
+
+def _model_put(token: str, entry: dict) -> None:
+    _shared_store(_MODEL_PREFIX + token, entry)
+    for gone in _shared_prune(_MODEL_PREFIX, _MODEL_CACHE_MAX):
+        _surface_cache_drop(gone[len(_MODEL_PREFIX) :])
+    _model_remember(token, entry)
+
+
+def _surface_cache_drop(token: str) -> None:
+    """Forget the grids of an evicted model, which can never be asked for again."""
+    with _surface_cache_lock:
+        for key in [k for k in _surface_cache if k[0] == token]:
+            del _surface_cache[key]
+    for name in _shared_names(_SURFACE_PREFIX + token + "-"):
+        _shared_drop(name)
+
+
+def _surface_name(key: tuple) -> str:
+    """A filename for one grid key: the token stays legible so an evicted
+    model can drop its grids by prefix, the rest is hashed."""
+    token = str(key[0])
+    digest = hashlib.blake2b(repr(key[1:]).encode(), digest_size=12).hexdigest()
+    return f"{_SURFACE_PREFIX}{token}-{digest}"
+
+
+def _surface_remember(key: tuple, grid: dict) -> None:
+    with _surface_cache_lock:
+        _surface_cache[key] = grid
+        _surface_cache.move_to_end(key)
+        while len(_surface_cache) > _SURFACE_CACHE_MAX:
+            _surface_cache.popitem(last=False)
+
+
+def _surface_get(key: tuple) -> dict | None:
+    with _surface_cache_lock:
+        grid = _surface_cache.get(key)
+        if grid is not None:
+            _surface_cache.move_to_end(key)
+            return grid
+    grid = _shared_load(_surface_name(key))
+    if grid is None:
+        return None
+    _surface_remember(key, grid)
+    return grid
+
+
+def _surface_put(key: tuple, grid: dict) -> None:
+    _shared_store(_surface_name(key), grid)
+    _shared_prune(_SURFACE_PREFIX, _SURFACE_CACHE_MAX)
+    _surface_remember(key, grid)
+
+
 def get_dataset(key: DatasetKey | dict[str, Any] | str | None) -> Dataset | None:
     """Return the dataset for *key*, building and caching it on first use.
 
@@ -947,16 +1165,22 @@ numeric_cols = _numeric_cols_of(_schema_df)
 all_cols = sorted(c for c in _schema_df.columns if c != "shot_id")
 _pair_axis_cols = ["shot_id"] + numeric_cols
 _search_cols = [f for f in (UMAP_FEATURES or numeric_cols) if f in _schema_df.columns]
+# Anything with a handful of distinct values can be learned; a continuous
+# column cannot. Computed once here so the dropdown is populated at import,
+# like every other column picker in the layout.
+_classify_target_cols = candidate_target_cols(_schema_df)
 
 _table_cols = [c for c in _schema_df.columns if not is_projection_col(c)]
 _CLUSTER_COLOR_VALUE = "__cluster__"
 _OUTLIER_COLOR_VALUE = "__outliers__"
+_CLASS_COLOR_VALUE = "__label__"
 _color_col_options = (
     [{"label": "shot_id", "value": "shot_id"}]
     + [{"label": c, "value": c} for c in all_cols]
     + [
         {"label": "Cluster", "value": _CLUSTER_COLOR_VALUE},
         {"label": "Outliers", "value": _OUTLIER_COLOR_VALUE},
+        {"label": "Label (model)", "value": _CLASS_COLOR_VALUE},
     ]
 )
 
@@ -1223,14 +1447,17 @@ def _trace_layout(**extra) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def make_shap_fig(ds: Dataset, shot_id: int) -> str | None:
-    """Return a base64-encoded PNG of the SHAP decision plot for one shot, or None."""
-    if _shap_da is None:
-        return None
-    idx = ds.shap_idx.get(int(shot_id))
-    if idx is None:
-        return None
+def _render_decision_plot(
+    base_value: float,
+    shap_values,
+    feature_names: list[str],
+    title: str | None = None,
+) -> str:
+    """Draw one SHAP decision plot in the dashboard's colours as a base64 PNG.
 
+    Matplotlib is used because shap draws with it; the styling below is what
+    makes the result sit inside a dark Dash panel without looking pasted in.
+    """
     import base64
     import io
 
@@ -1240,14 +1467,12 @@ def make_shap_fig(ds: Dataset, shot_id: int) -> str | None:
     import matplotlib.pyplot as plt
     import shap
 
-    shap_values = _shap_da.isel(shot_id=idx).sel(**{"class": True}).values
-
     with plt.style.context("dark_background"):
         plt.rcParams.update({"font.size": 7})
         shap.decision_plot(
-            0.0,
+            base_value,
             shap_values,
-            feature_names=_shap_feature_names,
+            feature_names=feature_names,
             show=False,
         )
         fig = plt.gcf()
@@ -1255,6 +1480,8 @@ def make_shap_fig(ds: Dataset, shot_id: int) -> str | None:
         fig.patch.set_facecolor("#1a1a2e")
         ax = fig.axes[0]
         ax.set_facecolor("#16213e")
+        if title:
+            ax.set_title(title)
         # Ensure all text is white and consistently small
         for artist in (
             [ax.title, ax.xaxis.label, ax.yaxis.label]
@@ -1276,6 +1503,53 @@ def make_shap_fig(ds: Dataset, shot_id: int) -> str | None:
     return base64.b64encode(buf.read()).decode()
 
 
+def make_shap_fig(ds: Dataset, shot_id: int) -> str | None:
+    """Return a base64-encoded PNG of the SHAP decision plot for one shot, or None.
+
+    This is the pre-computed path: the values come from the ``--shap-data``
+    file, not from a model trained in the app.
+    """
+    if _shap_da is None:
+        return None
+    idx = ds.shap_idx.get(int(shot_id))
+    if idx is None:
+        return None
+    shap_values = _shap_da.isel(shot_id=idx).sel(**{"class": True}).values
+    return _render_decision_plot(0.0, shap_values, _shap_feature_names)
+
+
+def make_model_shap_fig(token: str | None, shot_id: int, class_index: int) -> str | None:
+    """SHAP decision plot for one shot under the model trained in this session.
+
+    Returns None when there is no such model, when the shot is not in the
+    table it was trained on, or when ``shap`` is not installed -- all of which
+    the caller reports as a message rather than an error.
+    """
+    entry = _model_get(token)
+    if entry is None:
+        return None
+    row = entry["row_of"].get(int(shot_id))
+    if row is None:
+        return None
+    classes = entry["classes"]
+    safe_class = min(max(int(class_index), 0), len(classes) - 1)
+    # The explainer runs in a spawned subprocess for the same reason every
+    # other sklearn call does: BLAS in a forked gunicorn worker can SIGSEGV.
+    out = _spawn_sklearn(
+        _shap_decision_values,
+        entry["model"],
+        entry["X_background"],
+        entry["X_all"][row],
+        safe_class,
+    )
+    return _render_decision_plot(
+        out["base_value"],
+        np.asarray(out["values"]),
+        entry["features"],
+        title=f"Shot {shot_id} — P({classes[safe_class]})",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Clustering helpers
 # ---------------------------------------------------------------------------
@@ -1285,6 +1559,24 @@ _CLUSTER_ALGORITHMS = [
     {"label": "DBSCAN", "value": "dbscan"},
     {"label": "Agglomerative", "value": "agglomerative"},
 ]
+
+_SHAP_EMPTY_MSG = "Click a point to see SHAP values"
+_SHAP_NO_MODEL_MSG = "Train a model in the Classification tab, or pass --shap-data"
+
+_CLASSIFY_ALGORITHMS = [
+    {"label": "Gradient Boosting", "value": "gradient_boosting"},
+    {"label": "Random Forest", "value": "random_forest"},
+    {"label": "Gaussian Process", "value": "gaussian_process"},
+]
+_CLASSIFY_GP_KERNELS = [
+    {"label": "RBF", "value": "rbf"},
+    {"label": "Matern", "value": "matern"},
+]
+# Blue-through-red, the same palette the Correlation heatmap uses, so a low
+# and a high probability read the same way in both places.
+_SURFACE_COLORSCALE = "RdBu_r"
+_SURFACE_RESOLUTION = 120
+_SURFACE_OPACITY = 0.35
 
 
 def _load_cluster_representative_traces(
@@ -3173,6 +3465,281 @@ def _lineage_tab_children() -> list:
     ]
 
 
+# ---------------------------------------------------------------------------
+# Classification tab
+#
+# Built by a function rather than written inline, because it carries far more
+# controls than its sibling tabs and the layout literal is deep enough
+# already. It sits in the lower left-hand tab strip beside Clustering and
+# Outlier Detection: the same shape of question, asked with a target column.
+# ---------------------------------------------------------------------------
+
+_CLASSIFY_TAB_STYLE = dict(color=TEXT, backgroundColor=PANEL_BG, fontSize="12px", padding="4px 10px")
+_CLASSIFY_TAB_SELECTED_STYLE = dict(
+    color=ACCENT,
+    backgroundColor=DARK_BG,
+    borderTop=f"2px solid {ACCENT}",
+    fontSize="12px",
+    padding="4px 10px",
+)
+_CLASSIFY_ROW_STYLE = dict(display="flex", gap="8px", marginBottom="6px", flexWrap="wrap", alignItems="flex-end")
+
+
+def _classify_dropdown(component_id: str, options, value, width: str, clearable: bool = False) -> dcc.Dropdown:
+    return dcc.Dropdown(
+        id=component_id,
+        options=options,
+        value=value,
+        clearable=clearable,
+        style=dict(backgroundColor="#16213e", color="#000", width=width, fontSize="11px"),
+    )
+
+
+def _classify_tab() -> dcc.Tab:
+    """The Classification control panel."""
+    default_features = [c for c in (UMAP_FEATURES or numeric_cols) if c in numeric_cols][:8]
+    return dcc.Tab(
+        label="Classification",
+        value="classification",
+        style=_CLASSIFY_TAB_STYLE,
+        selected_style=_CLASSIFY_TAB_SELECTED_STYLE,
+        children=[
+            # The spinner targets classify-status, which the training callback
+            # writes directly. dcc.Loading only follows Outputs that land on
+            # one of its own children, so targeting the status span -- rather
+            # than a store further down the chain -- is what keeps it visible
+            # for the whole fit.
+            dcc.Loading(
+                type="circle",
+                color=ACCENT,
+                delay_show=_SPINNER_DELAY,
+                target_components={"classify-status": "children"},  # type: ignore
+                overlay_style=dict(visibility="visible", opacity=0.35),
+                children=html.Div(
+                    style=dict(padding="8px 4px", overflowY="auto", maxHeight="150px"),
+                    children=[
+                        html.Div(
+                            style=_CLASSIFY_ROW_STYLE,
+                            children=[
+                                _cluster_param_block(
+                                    "Model",
+                                    _classify_dropdown(
+                                        "classify-algorithm",
+                                        _CLASSIFY_ALGORITHMS,
+                                        "gradient_boosting",
+                                        "150px",
+                                    ),
+                                ),
+                                _cluster_param_block(
+                                    "Target",
+                                    _classify_dropdown(
+                                        "classify-target",
+                                        [{"label": c, "value": c} for c in _classify_target_cols],
+                                        _classify_target_cols[0] if _classify_target_cols else None,
+                                        "160px",
+                                        clearable=True,
+                                    ),
+                                ),
+                                _cluster_param_block(
+                                    "test_fraction",
+                                    dcc.Input(
+                                        id="classify-test-fraction",
+                                        type="number",
+                                        value=0.25,
+                                        min=0.0,
+                                        max=0.9,
+                                        step=0.05,
+                                        style=_CLUSTER_INPUT_STYLE,
+                                    ),
+                                ),
+                                _cluster_param_block(
+                                    "seed",
+                                    dcc.Input(
+                                        id="classify-seed",
+                                        type="number",
+                                        value=42,
+                                        step=1,
+                                        style=_CLUSTER_INPUT_STYLE,
+                                    ),
+                                ),
+                            ],
+                        ),
+                        # Per-model hyperparameters. Every block stays in the
+                        # tree and is shown or hidden by toggle_classify_params,
+                        # because a callback cannot reference an id the layout
+                        # does not contain.
+                        html.Div(
+                            style=_CLASSIFY_ROW_STYLE,
+                            children=[
+                                _cluster_param_block(
+                                    "n_estimators",
+                                    dcc.Input(
+                                        id="classify-n-estimators",
+                                        type="number",
+                                        value=100,
+                                        min=1,
+                                        max=2000,
+                                        step=10,
+                                        style=_CLUSTER_INPUT_STYLE,
+                                    ),
+                                    block_id="classify-n-estimators-block",
+                                ),
+                                _cluster_param_block(
+                                    "max_depth",
+                                    dcc.Input(
+                                        id="classify-max-depth",
+                                        type="number",
+                                        value=3,
+                                        min=1,
+                                        max=50,
+                                        step=1,
+                                        style=_CLUSTER_INPUT_STYLE,
+                                    ),
+                                    block_id="classify-max-depth-block",
+                                ),
+                                _cluster_param_block(
+                                    "learning_rate",
+                                    dcc.Input(
+                                        id="classify-learning-rate",
+                                        type="number",
+                                        value=0.1,
+                                        min=0.001,
+                                        max=1.0,
+                                        step=0.01,
+                                        style=_CLUSTER_INPUT_STYLE,
+                                    ),
+                                    block_id="classify-learning-rate-block",
+                                ),
+                                _cluster_param_block(
+                                    "subsample",
+                                    dcc.Input(
+                                        id="classify-subsample",
+                                        type="number",
+                                        value=1.0,
+                                        min=0.1,
+                                        max=1.0,
+                                        step=0.05,
+                                        style=_CLUSTER_INPUT_STYLE,
+                                    ),
+                                    block_id="classify-subsample-block",
+                                ),
+                                _cluster_param_block(
+                                    "min_samples_leaf",
+                                    dcc.Input(
+                                        id="classify-min-samples-leaf",
+                                        type="number",
+                                        value=1,
+                                        min=1,
+                                        step=1,
+                                        style=_CLUSTER_INPUT_STYLE,
+                                    ),
+                                    block_id="classify-min-samples-leaf-block",
+                                ),
+                                html.Div(
+                                    id="classify-balanced-block",
+                                    children=[
+                                        dcc.Checklist(
+                                            id="classify-balanced",
+                                            options=[{"label": " Balance classes", "value": "balanced"}],
+                                            value=[],
+                                            inputStyle=dict(marginRight="4px"),
+                                            labelStyle=dict(fontSize="11px", color=TEXT, cursor="pointer"),
+                                        ),
+                                    ],
+                                ),
+                                _cluster_param_block(
+                                    "kernel",
+                                    _classify_dropdown(
+                                        "classify-gp-kernel",
+                                        _CLASSIFY_GP_KERNELS,
+                                        "rbf",
+                                        "100px",
+                                    ),
+                                    block_id="classify-gp-kernel-block",
+                                ),
+                                _cluster_param_block(
+                                    "length_scale",
+                                    dcc.Input(
+                                        id="classify-gp-length-scale",
+                                        type="number",
+                                        value=1.0,
+                                        min=0.01,
+                                        step=0.1,
+                                        style=_CLUSTER_INPUT_STYLE,
+                                    ),
+                                    block_id="classify-gp-length-scale-block",
+                                ),
+                                _cluster_param_block(
+                                    "restarts",
+                                    dcc.Input(
+                                        id="classify-gp-restarts",
+                                        type="number",
+                                        value=0,
+                                        min=0,
+                                        max=10,
+                                        step=1,
+                                        style=_CLUSTER_INPUT_STYLE,
+                                    ),
+                                    block_id="classify-gp-restarts-block",
+                                ),
+                                _cluster_param_block(
+                                    "max_train_rows",
+                                    dcc.Input(
+                                        id="classify-max-train-rows",
+                                        type="number",
+                                        value=2000,
+                                        min=20,
+                                        step=100,
+                                        style=_CLUSTER_INPUT_STYLE,
+                                    ),
+                                    block_id="classify-max-train-rows-block",
+                                ),
+                            ],
+                        ),
+                        html.Div(
+                            style=dict(marginBottom="6px"),
+                            children=[
+                                html.Label("Features", style=_CLUSTER_LABEL_STYLE),
+                                dcc.Dropdown(
+                                    id="classify-features",
+                                    options=[{"label": c, "value": c} for c in numeric_cols],
+                                    value=default_features,
+                                    multi=True,
+                                    placeholder="Select feature columns...",
+                                    style=dict(backgroundColor="#16213e", color="#000", fontSize="11px"),
+                                ),
+                            ],
+                        ),
+                        html.Div(
+                            style=dict(display="flex", alignItems="center", gap="8px", marginBottom="6px"),
+                            children=[
+                                html.Button("Train model", id="run-classify-btn", n_clicks=0, style=_BTN_STYLE),
+                                html.Span(id="classify-status", style=dict(fontSize="11px", color="#888")),
+                            ],
+                        ),
+                        html.Div(
+                            style=dict(display="flex", alignItems="center", gap="8px", flexWrap="wrap"),
+                            children=[
+                                dcc.Checklist(
+                                    id="classify-show-surface",
+                                    options=[{"label": " Decision surface", "value": "surface"}],
+                                    value=["surface"],
+                                    inputStyle=dict(marginRight="4px"),
+                                    labelStyle=dict(fontSize="11px", color=TEXT, cursor="pointer"),
+                                ),
+                                _cluster_param_block(
+                                    "Surface class",
+                                    _classify_dropdown("classify-surface-class", [], None, "140px"),
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ),
+        ],
+    )
+
+
 # Scatter Graph height — fills viewport minus header + tab bar + controls + padding
 _SCATTER_H = "calc(100vh - 183px)"
 
@@ -3234,6 +3801,13 @@ app.layout = html.Div(
         dcc.Store(id="centroid-data", data=None),
         dcc.Store(id="outlier-labels", data=None),
         dcc.Store(id="outlier-traces-data", data=None),
+        # Classification results. "class-labels" is the predicted class of
+        # every shot, "class-proba" the full probability matrix the decision
+        # surface is drawn from, and "class-model" only an opaque token into
+        # the server-side model cache -- a fitted estimator is not JSON.
+        dcc.Store(id="class-labels", data=None),
+        dcc.Store(id="class-proba", data=None),
+        dcc.Store(id="class-model", data=None),
         dcc.Store(id="search-results", data=None),
         dcc.Store(id="search-traces-data", data=None),
         dcc.Store(id="search-highlight-enabled", data=True),
@@ -3507,48 +4081,53 @@ app.layout = html.Div(
                                         ),
                                     ],
                                 ),
-                                *(
-                                    [
-                                        dcc.Tab(
-                                            label="SHAP",
-                                            value="shap",
-                                            style=dict(
-                                                color=TEXT,
-                                                backgroundColor=PANEL_BG,
-                                                fontSize="12px",
-                                                padding="4px 10px",
-                                            ),
-                                            selected_style=dict(
-                                                color=ACCENT,
-                                                backgroundColor=DARK_BG,
-                                                borderTop=f"2px solid {ACCENT}",
-                                                fontSize="12px",
-                                                padding="4px 10px",
-                                            ),
-                                            children=[
-                                                html.Div(
-                                                    id="shap-container",
-                                                    style=dict(
-                                                        height="calc(100vh - 430px)",
-                                                        minHeight="220px",
-                                                        overflowY="auto",
-                                                        padding="4px",
-                                                    ),
-                                                    children=[
-                                                        html.Span(
-                                                            "Click a point to see SHAP values",
-                                                            style=dict(
-                                                                fontSize="11px",
-                                                                color="#555",
-                                                            ),
-                                                        )
-                                                    ],
+                                # Always present, never omitted: the tab now
+                                # serves a model trained in the Classification
+                                # tab as well as a --shap-data file, and either
+                                # can appear after the layout is built.
+                                dcc.Tab(
+                                    label="SHAP",
+                                    value="shap",
+                                    style=dict(
+                                        color=TEXT,
+                                        backgroundColor=PANEL_BG,
+                                        fontSize="12px",
+                                        padding="4px 10px",
+                                    ),
+                                    selected_style=dict(
+                                        color=ACCENT,
+                                        backgroundColor=DARK_BG,
+                                        borderTop=f"2px solid {ACCENT}",
+                                        fontSize="12px",
+                                        padding="4px 10px",
+                                    ),
+                                    children=[
+                                        dcc.Loading(
+                                            type="circle",
+                                            color=ACCENT,
+                                            delay_show=_SPINNER_DELAY,
+                                            target_components={"shap-container": "children"},  # type: ignore
+                                            overlay_style=dict(visibility="visible", opacity=0.35),
+                                            children=html.Div(
+                                                id="shap-container",
+                                                style=dict(
+                                                    height="calc(100vh - 430px)",
+                                                    minHeight="220px",
+                                                    overflowY="auto",
+                                                    padding="4px",
                                                 ),
-                                            ],
-                                        )
-                                    ]
-                                    if SHOW_SHAP
-                                    else []
+                                                children=[
+                                                    html.Span(
+                                                        _SHAP_EMPTY_MSG,
+                                                        style=dict(
+                                                            fontSize="11px",
+                                                            color="#555",
+                                                        ),
+                                                    )
+                                                ],
+                                            ),
+                                        ),
+                                    ],
                                 ),
                                 dcc.Tab(
                                     label="Cluster Traces",
@@ -4013,6 +4592,7 @@ app.layout = html.Div(
                                                 ),
                                             ],
                                         ),
+                                        _classify_tab(),
                                         dcc.Tab(
                                             label="Filters",
                                             value="filters",
@@ -4449,10 +5029,25 @@ app.layout = html.Div(
                                                 ),
                                             ],
                                         ),
-                                        dcc.Graph(
-                                            id="pair-plot",
-                                            config=dict(displayModeBar=True, displaylogo=False),
-                                            style=dict(height=_SCATTER_H),
+                                        # Switching an axis, its scale or a
+                                        # filter rebuilds the decision
+                                        # surface, which takes long enough to
+                                        # look like nothing happened. The
+                                        # spinner covers the plot, and the
+                                        # previous figure stays visible
+                                        # underneath, until the new one
+                                        # arrives.
+                                        dcc.Loading(
+                                            type="circle",
+                                            color=ACCENT,
+                                            delay_show=_SPINNER_DELAY,
+                                            target_components={"pair-plot": "figure"},  # type: ignore
+                                            overlay_style=dict(visibility="visible", opacity=0.35),
+                                            children=dcc.Graph(
+                                                id="pair-plot",
+                                                config=dict(displayModeBar=True, displaylogo=False),
+                                                style=dict(height=_SCATTER_H),
+                                            ),
                                         ),
                                     ],
                                 ),
@@ -4806,17 +5401,25 @@ app.layout = html.Div(
                                 # -- Lineage tab (needs a reference column) --
                                 #
                                 # Always in the tree and disabled when there is
-                                # no reference column, the same treatment the
-                                # Time Traces tab gets. Leaving it out would
+                                # no reference column. Leaving it out would
                                 # break its callbacks, which are registered at
                                 # import and cannot be added afterwards, and the
                                 # Configuration tab can set the column while the
                                 # app runs.
+                                #
+                                # Disabled always means "no reference column"
+                                # here, and then the tab is hidden instead of
+                                # greyed out: a tab that can never open is only
+                                # clutter. dcc.Tab uses disabled_style in place
+                                # of style whenever disabled is True, so this
+                                # needs no callback of its own -- the existing
+                                # one writing `disabled` hides and shows it.
                                 dcc.Tab(
                                     label="Lineage",
                                     value="lineage",
                                     id="lineage-tab",
                                     disabled=not SHOW_REF_TOGGLE,
+                                    disabled_style=dict(_HIDE),
                                     style=dict(color=TEXT, backgroundColor=PANEL_BG),
                                     selected_style=dict(
                                         color=ACCENT,
@@ -4962,6 +5565,210 @@ _SCATTER_LAYOUT = dict(
     yaxis=dict(gridcolor="#2a2a4a", zerolinecolor="#444"),
     clickmode="event+select",
 )
+
+
+# ---------------------------------------------------------------------------
+# Scatter colouring and the decision surface
+#
+# The Projection and the Pairwise Scatter differ only in their axes, so the
+# colour rules and the surface live here once rather than twice.
+# ---------------------------------------------------------------------------
+
+
+def _class_color_map(classes: list[str]) -> dict[str, str]:
+    """A fixed colour per class, by position rather than by name.
+
+    Positional so the surface's colourbar and the point colours agree, and so
+    a class keeps its colour when the model is retrained with the same target.
+    """
+    palette = px.colors.qualitative.Plotly
+    return {name: palette[i % len(palette)] for i, name in enumerate(classes)}
+
+
+def _resolve_color(
+    plot_df: pd.DataFrame,
+    color_col,
+    cluster_labels,
+    cluster_names,
+    outlier_labels,
+    class_labels,
+    class_model,
+) -> tuple[pd.DataFrame, dict]:
+    """Return the frame to plot and the px.scatter kwargs that colour it.
+
+    The three computed colourings -- cluster, outlier, predicted label -- all
+    live in stores rather than in the dataset, so each merges its own column
+    into a copy of *plot_df* and names it.
+    """
+    if color_col == _CLUSTER_COLOR_VALUE and cluster_labels:
+        enriched, col = _apply_cluster_color(plot_df, cluster_labels, cluster_names or {})
+        return enriched, {"color": col}
+    if color_col == _OUTLIER_COLOR_VALUE and outlier_labels:
+        enriched, col = _apply_outlier_color(plot_df, outlier_labels)
+        return enriched, {
+            "color": col,
+            "color_discrete_map": {"Outlier": _OUTLIER_RED, "Inlier": _INLIER_BLUE},
+        }
+    if color_col == _CLASS_COLOR_VALUE and class_labels:
+        enriched, col = _apply_class_color(plot_df, class_labels)
+        classes = (class_model or {}).get("classes") or sorted(set(class_labels.values()))
+        return enriched, {
+            "color": col,
+            "category_orders": {col: classes},
+            "color_discrete_map": _class_color_map(classes),
+        }
+    if color_col and color_col in plot_df.columns:
+        valid = plot_df[color_col].notna()
+        if valid.any():
+            return plot_df[valid], {"color": color_col}
+    return plot_df, {}
+
+
+def _surface_class_index(class_model, surface_class) -> int:
+    """Position of the class whose probability the surface shows.
+
+    Defaults to the last class, so a 0/1 target shows P(1) -- the reading the
+    word "probability" has for a binary problem.
+    """
+    classes = (class_model or {}).get("classes") or []
+    if surface_class in classes:
+        return classes.index(surface_class)
+    return max(len(classes) - 1, 0)
+
+
+def _shot_fingerprint(df: pd.DataFrame) -> str:
+    """A cheap, exact identifier for which shots a frame holds.
+
+    Hashing the ids themselves rather than the filter definitions: two
+    different sets of filters that keep the same shots produce the same
+    surface, and should share the cached one.
+
+    blake2b rather than the built-in ``hash``, which is salted per process:
+    the grids behind this key are shared between gunicorn workers, so two
+    workers looking at the same shots have to name them the same way.
+    """
+    ids = np.ascontiguousarray(df["shot_id"].astype("int64").values).tobytes()
+    return hashlib.blake2b(ids, digest_size=16).hexdigest()
+
+
+def _surface_grid(
+    df: pd.DataFrame,
+    proba,
+    class_model,
+    x_col: str,
+    y_col: str,
+    class_index: int,
+    log_axes: tuple[bool, bool] = (False, False),
+) -> dict | None:
+    """The probability grid for one plane, computed once and cached.
+
+    *df* is the filtered frame, so the surface covers the shots on screen and
+    no others. A filter is a statement about which shots are of interest, and
+    a surface drawn over the discarded ones would assert a boundary through
+    data the user has just said to leave out.
+
+    *log_axes* is part of the key as well as the calculation: a log plot needs
+    a grid spaced in log10, so it is a different grid, not the same one drawn
+    differently.
+    """
+    token = (class_model or {}).get("token")
+    if not token or not proba or x_col not in df.columns or y_col not in df.columns:
+        return None
+    key = (token, x_col, y_col, class_index, _shot_fingerprint(df), log_axes)
+    cached = _surface_get(key)
+    if cached is not None:
+        return cached
+
+    values = np.asarray(proba["values"], dtype=float)
+    if class_index >= values.shape[1]:
+        return None
+    by_shot = pd.Series(values[:, class_index], index=[int(s) for s in proba["shot_ids"]])
+    p = df["shot_id"].astype(int).map(by_shot)
+    keep = p.notna()
+    if not keep.any():
+        return None
+    try:
+        grid = decision_surface(
+            df.loc[keep, [x_col, y_col]].values.astype(float),
+            p[keep].values.astype(float),
+            resolution=_SURFACE_RESOLUTION,
+            log_axes=log_axes,
+        )
+    except Exception as exc:
+        log.error("[decision surface] %s", exc)
+        return None
+    if grid is not None:
+        _surface_put(key, grid)
+    return grid
+
+
+def _decision_surface_trace(grid: dict, class_name: str) -> go.Heatmap:
+    """The surface as a heatmap trace.
+
+    ``hoverinfo="skip"`` matters as much as the colours: without it the
+    surface sits over every point and swallows the clicks that select a shot.
+    """
+    return go.Heatmap(
+        x=grid["x"],
+        y=grid["y"],
+        z=grid["z"],
+        zmin=0.0,
+        zmax=1.0,
+        colorscale=_SURFACE_COLORSCALE,
+        opacity=_SURFACE_OPACITY,
+        hoverinfo="skip",
+        showlegend=False,
+        colorbar=dict(
+            title=dict(text=f"P({class_name})", font=dict(color=TEXT, size=10)),
+            tickfont=dict(color=TEXT, size=9),
+            bgcolor=PANEL_BG,
+            bordercolor="#2a2a4a",
+            thickness=12,
+            len=0.55,
+            x=1.02,
+        ),
+    )
+
+
+def _surface_for(
+    df: pd.DataFrame,
+    proba,
+    class_model,
+    show_surface,
+    surface_class,
+    x_col: str,
+    y_col: str,
+    log_axes: tuple[bool, bool] = (False, False),
+) -> go.Heatmap | None:
+    """The surface trace for one plane, or None when there is nothing to draw.
+
+    *df* is the filtered frame the points are drawn from, so the surface is
+    cropped to the same shots.
+    """
+    if not show_surface or not class_model or not proba:
+        return None
+    index = _surface_class_index(class_model, surface_class)
+    grid = _surface_grid(df, proba, class_model, x_col, y_col, index, log_axes)
+    if grid is None:
+        return None
+    classes = class_model.get("classes") or []
+    return _decision_surface_trace(grid, classes[index] if index < len(classes) else "class")
+
+
+def _scatter_with_surface(kwargs: dict, surface: go.Heatmap | None) -> go.Figure:
+    """px.scatter, optionally over a decision surface.
+
+    Plotly draws traces in the order they are added, so the heatmap has to go
+    in before the points or it would cover them.
+    """
+    scatter = px.scatter(**kwargs)
+    if surface is None:
+        return scatter
+    fig = go.Figure(layout=scatter.layout)
+    fig.add_trace(surface)
+    for trace in scatter.data:
+        fig.add_trace(trace)
+    return fig
 
 
 SELECT_VARIABLE_MSG = "Select a variable to load data"
@@ -5210,7 +6017,11 @@ def clear_filters(_, _row_clicks):
 @app.callback(
     Output("ref-graph-enabled", "data"),
     Output("ref-toggle-btn", "children"),
-    Output("ref-toggle-btn", "style"),
+    # Shared with update_reference_feature_visibility, which decides whether
+    # the button is shown at all. That one has to run on page load, so this
+    # one carries the duplicate flag -- allow_duplicate needs
+    # prevent_initial_call, which only this callback can have.
+    Output("ref-toggle-btn", "style", allow_duplicate=True),
     Input("ref-toggle-btn", "n_clicks"),
     State("ref-graph-enabled", "data"),
     prevent_initial_call=True,
@@ -5355,6 +6166,11 @@ def update_latest_shot(_dataset_version, variable):
     Input("cluster-labels", "data"),
     Input("cluster-names", "data"),
     Input("outlier-labels", "data"),
+    Input("class-labels", "data"),
+    Input("class-proba", "data"),
+    Input("class-model", "data"),
+    Input("classify-show-surface", "value"),
+    Input("classify-surface-class", "value"),
     Input("search-results", "data"),
     Input("search-highlight-enabled", "data"),
     Input("latest-shot", "data"),
@@ -5370,6 +6186,11 @@ def update_umap(
     cluster_labels,
     cluster_names,
     outlier_labels,
+    class_labels,
+    class_proba,
+    class_model,
+    show_surface,
+    surface_class,
     search_results,
     search_highlight_enabled,
     latest_shot,
@@ -5389,25 +6210,19 @@ def update_umap(
         hover_name="shot_id",
         labels={"umap_x": ds.x_label, "umap_y": ds.y_label},
     )
-    if color_col == _CLUSTER_COLOR_VALUE and cluster_labels:
-        enriched, col = _apply_cluster_color(plot_df, cluster_labels, cluster_names or {})
-        kwargs["data_frame"] = enriched
-        kwargs["color"] = col
-    elif color_col == _OUTLIER_COLOR_VALUE and outlier_labels:
-        enriched, col = _apply_outlier_color(plot_df, outlier_labels)
-        kwargs["data_frame"] = enriched
-        kwargs["color"] = col
-        kwargs["color_discrete_map"] = {"Outlier": _OUTLIER_RED, "Inlier": _INLIER_BLUE}
-    elif color_col and color_col in plot_df.columns:
-        valid = plot_df[color_col].notna()
-        if valid.any():
-            kwargs["data_frame"] = plot_df[valid]
-            kwargs["color"] = color_col
+    frame, color_kwargs = _resolve_color(
+        plot_df, color_col, cluster_labels, cluster_names, outlier_labels, class_labels, class_model
+    )
+    kwargs["data_frame"] = frame
+    kwargs.update(color_kwargs)
 
-    fig = px.scatter(**kwargs)
+    fig = _scatter_with_surface(
+        kwargs, _surface_for(plot_df, class_proba, class_model, show_surface, surface_class, "umap_x", "umap_y")
+    )
     fig.update_traces(
         marker=dict(size=5, opacity=0.75),
         unselected=dict(marker=dict(opacity=0.75)),
+        selector=dict(type="scatter"),
     )
     fig.update_layout(**_SCATTER_LAYOUT, uirevision="umap")
     if ref_graph_enabled and selected_shot is not None:
@@ -5432,6 +6247,11 @@ def update_umap(
     Input("cluster-labels", "data"),
     Input("cluster-names", "data"),
     Input("outlier-labels", "data"),
+    Input("class-labels", "data"),
+    Input("class-proba", "data"),
+    Input("class-model", "data"),
+    Input("classify-show-surface", "value"),
+    Input("classify-surface-class", "value"),
     Input("search-results", "data"),
     Input("search-highlight-enabled", "data"),
     Input("latest-shot", "data"),
@@ -5451,6 +6271,11 @@ def update_pair_plot(
     cluster_labels,
     cluster_names,
     outlier_labels,
+    class_labels,
+    class_proba,
+    class_model,
+    show_surface,
+    surface_class,
     search_results,
     search_highlight_enabled,
     latest_shot,
@@ -5472,25 +6297,25 @@ def update_pair_plot(
         custom_data=["shot_id"],
         hover_name="shot_id",
     )
-    if color_col == _CLUSTER_COLOR_VALUE and cluster_labels:
-        enriched, col = _apply_cluster_color(plot_df, cluster_labels, cluster_names or {})
-        kwargs["data_frame"] = enriched
-        kwargs["color"] = col
-    elif color_col == _OUTLIER_COLOR_VALUE and outlier_labels:
-        enriched, col = _apply_outlier_color(plot_df, outlier_labels)
-        kwargs["data_frame"] = enriched
-        kwargs["color"] = col
-        kwargs["color_discrete_map"] = {"Outlier": _OUTLIER_RED, "Inlier": _INLIER_BLUE}
-    elif color_col and color_col in plot_df.columns:
-        valid = plot_df[color_col].notna()
-        if valid.any():
-            kwargs["data_frame"] = plot_df[valid]
-            kwargs["color"] = color_col
+    frame, color_kwargs = _resolve_color(
+        plot_df, color_col, cluster_labels, cluster_names, outlier_labels, class_labels, class_model
+    )
+    kwargs["data_frame"] = frame
+    kwargs.update(color_kwargs)
 
-    fig = px.scatter(**kwargs)
+    # The grid is built in whichever space each axis is drawn in, so a log
+    # scale gets log-spaced cells rather than a linear grid stretched across
+    # it. Plotly still wants the coordinates in data units and takes the
+    # logarithm itself, which is what decision_surface returns.
+    log_axes = (x_scale == "log", y_scale == "log")
+    fig = _scatter_with_surface(
+        kwargs,
+        _surface_for(plot_df, class_proba, class_model, show_surface, surface_class, x_col, y_col, log_axes),
+    )
     fig.update_traces(
         marker=dict(size=5, opacity=0.75),
         unselected=dict(marker=dict(opacity=0.75)),
+        selector=dict(type="scatter"),
     )
     fig.update_layout(
         **_SCATTER_LAYOUT,
@@ -5723,30 +6548,60 @@ if SHOW_TRACES:
             title += f" — no data for: {', '.join(missing)}"
         return make_traces_fig(shot_df, cfg_signals), title
 
-    if SHOW_SHAP:
 
-        @app.callback(
-            Output("shap-container", "children"),
-            Input("selected-shot", "data"),
-            Input("dataset-key", "data"),
-        )
-        def update_shap(shot_id, variable):
-            ds = get_dataset(variable)
-            if ds is None or shot_id is None:
-                return html.Span(
-                    "Click a point to see SHAP values",
-                    style=dict(fontSize="11px", color="#555"),
-                )
-            img_b64 = make_shap_fig(ds, shot_id)
-            if img_b64 is None:
-                return html.Span(
-                    f"No SHAP data for shot {shot_id}",
-                    style=dict(fontSize="11px", color="#555"),
-                )
-            return html.Img(
-                src=f"data:image/png;base64,{img_b64}",
-                style=dict(width="100%", height="auto"),
-            )
+# ---------------------------------------------------------------------------
+# SHAP callback
+#
+# Registered unconditionally: a model trained in the Classification tab is a
+# second source of SHAP values, and it does not exist when the layout is
+# built. Callbacks cannot be added after import, so the decision of what to
+# show has to be made here, per request, rather than at startup.
+# ---------------------------------------------------------------------------
+
+
+def _shap_message(text: str) -> html.Span:
+    return html.Span(text, style=dict(fontSize="11px", color="#555"))
+
+
+@app.callback(
+    Output("shap-container", "children"),
+    Input("selected-shot", "data"),
+    Input("class-model", "data"),
+    Input("classify-surface-class", "value"),
+    Input("dataset-key", "data"),
+)
+def update_shap(shot_id, class_model, surface_class, variable):
+    """Explain the selected shot.
+
+    A model trained in this session wins over the pre-computed file: it is the
+    one the user is currently reasoning about, and its features are the ones
+    they chose.
+    """
+    if shot_id is None:
+        return _shap_message(_SHAP_EMPTY_MSG if (SHOW_SHAP or class_model) else _SHAP_NO_MODEL_MSG)
+
+    if class_model:
+        classes = class_model.get("classes") or []
+        index = classes.index(surface_class) if surface_class in classes else len(classes) - 1
+        try:
+            img_b64 = make_model_shap_fig(class_model.get("token"), shot_id, index)
+        except ImportError:
+            return _shap_message("SHAP is not installed — pip install 'nice-shot[shap]'")
+        except Exception as exc:
+            log.error("[shap] %s", exc)
+            return _shap_message(f"Could not explain shot {shot_id}: {exc}")
+        if img_b64 is not None:
+            return html.Img(src=f"data:image/png;base64,{img_b64}", style=dict(width="100%", height="auto"))
+        if not SHOW_SHAP:
+            return _shap_message(f"No trained-model SHAP for shot {shot_id} — train again")
+
+    ds = get_dataset(variable)
+    if ds is None or not SHOW_SHAP:
+        return _shap_message(_SHAP_NO_MODEL_MSG)
+    img_b64 = make_shap_fig(ds, shot_id)
+    if img_b64 is None:
+        return _shap_message(f"No SHAP data for shot {shot_id}")
+    return html.Img(src=f"data:image/png;base64,{img_b64}", style=dict(width="100%", height="auto"))
 
 
 # ---------------------------------------------------------------------------
@@ -5912,10 +6767,13 @@ def render_centroid_fig(centroid_data, cluster_names, cfg_signals):
     Input("download-table-btn", "n_clicks"),
     State("cluster-labels", "data"),
     State("cluster-names", "data"),
+    State("class-labels", "data"),
+    State("class-proba", "data"),
+    State("class-model", "data"),
     State("dataset-key", "data"),
     prevent_initial_call=True,
 )
-def download_table(n_clicks, cluster_labels, cluster_names, variable):
+def download_table(n_clicks, cluster_labels, cluster_names, class_labels, class_proba, class_model, variable):
     ds = get_dataset(variable)
     if ds is None:
         return dash.no_update
@@ -5932,6 +6790,16 @@ def download_table(n_clicks, cluster_labels, cluster_names, variable):
             return names.get(str(cid)) or (f"Cluster {cid}" if cid >= 0 else "Noise")
 
         export["cluster_name"] = export["cluster_id"].apply(_cname)
+    if class_labels:
+        export["label"] = export["shot_id"].map({int(k): v for k, v in class_labels.items()})
+    # The probabilities go out too: a decision surface read off the screen is
+    # not a number anyone can work with afterwards.
+    if class_proba and class_model:
+        classes = class_model.get("classes") or []
+        values = np.asarray(class_proba["values"], dtype=float)
+        index = [int(sid) for sid in class_proba["shot_ids"]]
+        for i, name in enumerate(classes):
+            export[f"p_{name}"] = export["shot_id"].map(pd.Series(values[:, i], index=index))
     return dcc.send_data_frame(export.to_csv, "niceshot_export.csv", index=False)
 
 
@@ -6066,6 +6934,247 @@ def render_outlier_traces(outlier_traces_data, cfg_signals):
     fig = _render_outlier_traces_fig(outlier_traces_data, cfg_signals)
     n = len(outlier_traces_data)
     return fig, f"Showing {n} outlier sample(s)"
+
+
+# ---------------------------------------------------------------------------
+# Classification callbacks
+# ---------------------------------------------------------------------------
+
+# Which hyperparameter blocks each model uses. A block not named here is
+# hidden rather than removed: a callback cannot reference an id the layout
+# does not contain, so every control stays in the tree.
+_CLASSIFY_PARAM_BLOCKS = (
+    "classify-n-estimators-block",
+    "classify-max-depth-block",
+    "classify-learning-rate-block",
+    "classify-subsample-block",
+    "classify-min-samples-leaf-block",
+    "classify-balanced-block",
+    "classify-gp-kernel-block",
+    "classify-gp-length-scale-block",
+    "classify-gp-restarts-block",
+    "classify-max-train-rows-block",
+)
+_CLASSIFY_PARAMS_FOR = {
+    "gradient_boosting": {
+        "classify-n-estimators-block",
+        "classify-max-depth-block",
+        "classify-learning-rate-block",
+        "classify-subsample-block",
+    },
+    "random_forest": {
+        "classify-n-estimators-block",
+        "classify-max-depth-block",
+        "classify-min-samples-leaf-block",
+        "classify-balanced-block",
+    },
+    "gaussian_process": {
+        "classify-gp-kernel-block",
+        "classify-gp-length-scale-block",
+        "classify-gp-restarts-block",
+        "classify-max-train-rows-block",
+    },
+}
+
+
+@app.callback(
+    [Output(block_id, "style") for block_id in _CLASSIFY_PARAM_BLOCKS],
+    Input("classify-algorithm", "value"),
+)
+def toggle_classify_params(algorithm):
+    """Show only the hyperparameters the chosen model actually reads."""
+    shown = _CLASSIFY_PARAMS_FOR.get(algorithm or "gradient_boosting", set())
+    return [_SHOW if block_id in shown else _HIDE for block_id in _CLASSIFY_PARAM_BLOCKS]
+
+
+def _classify_params(
+    algorithm: str,
+    n_estimators,
+    max_depth,
+    learning_rate,
+    subsample,
+    min_samples_leaf,
+    balanced,
+    gp_kernel,
+    gp_length_scale,
+    gp_restarts,
+    max_train_rows,
+) -> dict:
+    """Collect the controls the chosen model reads into its keyword arguments."""
+    if algorithm == "gradient_boosting":
+        return {
+            "n_estimators": int(n_estimators or 100),
+            "max_depth": int(max_depth or 3),
+            "learning_rate": float(learning_rate or 0.1),
+            "subsample": float(subsample or 1.0),
+        }
+    if algorithm == "random_forest":
+        return {
+            "n_estimators": int(n_estimators or 100),
+            "max_depth": int(max_depth) if max_depth else None,
+            "min_samples_leaf": int(min_samples_leaf or 1),
+            "balanced": bool(balanced),
+        }
+    return {
+        "kernel": gp_kernel or "rbf",
+        "length_scale": float(gp_length_scale or 1.0),
+        "n_restarts_optimizer": int(gp_restarts or 0),
+        "max_train_rows": int(max_train_rows or 2000),
+    }
+
+
+def _classify_status(result: dict) -> str:
+    """One line describing what the fit produced."""
+    metrics = result["metrics"]
+    parts = [
+        f"{len(result['classes'])} class(es)",
+        f"{len(result['labels']):,} shots",
+        f"train acc {metrics['train_accuracy']:.2f}",
+    ]
+    if metrics.get("n_test"):
+        parts.append(f"test acc {metrics['test_accuracy']:.2f}")
+        parts.append(f"macro F1 {metrics['test_f1']:.2f}")
+    else:
+        parts.append("no test split")
+    if metrics.get("subsampled"):
+        parts.append(f"trained on {metrics['subsampled']:,} sampled rows")
+    return " · ".join(parts)
+
+
+@app.callback(
+    Output("class-labels", "data"),
+    Output("class-proba", "data"),
+    Output("class-model", "data"),
+    Output("classify-status", "children"),
+    Output("umap-color-col", "value", allow_duplicate=True),
+    Output("pair-color-col", "value", allow_duplicate=True),
+    Input("run-classify-btn", "n_clicks"),
+    State("classify-algorithm", "value"),
+    State("classify-target", "value"),
+    State("classify-features", "value"),
+    State("classify-test-fraction", "value"),
+    State("classify-seed", "value"),
+    State("classify-n-estimators", "value"),
+    State("classify-max-depth", "value"),
+    State("classify-learning-rate", "value"),
+    State("classify-subsample", "value"),
+    State("classify-min-samples-leaf", "value"),
+    State("classify-balanced", "value"),
+    State("classify-gp-kernel", "value"),
+    State("classify-gp-length-scale", "value"),
+    State("classify-gp-restarts", "value"),
+    State("classify-max-train-rows", "value"),
+    State("dataset-key", "data"),
+    prevent_initial_call=True,
+)
+def run_classification(
+    n_clicks,
+    algorithm,
+    target,
+    features,
+    test_fraction,
+    seed,
+    n_estimators,
+    max_depth,
+    learning_rate,
+    subsample,
+    min_samples_leaf,
+    balanced,
+    gp_kernel,
+    gp_length_scale,
+    gp_restarts,
+    max_train_rows,
+    variable,
+):
+    """Train the chosen model and publish its predictions.
+
+    The features are robustly scaled before the fit, so a column measured in
+    megamps and a column measured in per-cent count for the same amount.
+    """
+    nothing = (dash.no_update,) * 5
+    ds = get_dataset(variable)
+    if ds is None:
+        return (*nothing[:3], SELECT_VARIABLE_MSG, *nothing[3:])
+    if not target:
+        return (*nothing[:3], "Select a target column", *nothing[3:])
+    if not features:
+        return (*nothing[:3], "Select at least one feature", *nothing[3:])
+
+    algorithm = algorithm or "gradient_boosting"
+    params = _classify_params(
+        algorithm,
+        n_estimators,
+        max_depth,
+        learning_rate,
+        subsample,
+        min_samples_leaf,
+        balanced,
+        gp_kernel,
+        gp_length_scale,
+        gp_restarts,
+        max_train_rows,
+    )
+    try:
+        fit = _run_classification(
+            ds.df,
+            algorithm=algorithm,
+            features=list(features),
+            target=target,
+            params=params,
+            test_fraction=float(test_fraction if test_fraction is not None else 0.25),
+            seed=int(seed if seed is not None else 42),
+        )
+    except Exception as exc:
+        log.error("[classification] %s", exc)
+        return (*nothing[:3], f"Error: {exc}", *nothing[3:])
+
+    result = fit["result"]
+    # The estimator stays here; the browser only ever sees the token.
+    token = uuid.uuid4().hex
+    _model_put(
+        token,
+        {
+            "model": fit["model"],
+            "X_all": fit["X_all"],
+            "X_background": fit["X_background"],
+            "row_of": {sid: i for i, sid in enumerate(fit["shot_ids"])},
+            "features": result["features"],
+            "classes": result["classes"],
+            "algorithm": algorithm,
+        },
+    )
+    model_store = {
+        "token": token,
+        "classes": result["classes"],
+        "features": result["features"],
+        "target": target,
+        "algorithm": algorithm,
+    }
+    return (
+        result["labels"],
+        result["proba"],
+        model_store,
+        _classify_status(result),
+        _CLASS_COLOR_VALUE,
+        _CLASS_COLOR_VALUE,
+    )
+
+
+@app.callback(
+    Output("classify-surface-class", "options"),
+    Output("classify-surface-class", "value"),
+    Input("class-model", "data"),
+)
+def update_surface_class_options(class_model):
+    """Offer the classes the model learned.
+
+    The last class is the default, so a 0/1 target shows P(1) without the user
+    choosing anything -- the reading "probability" has for a binary problem.
+    """
+    classes = (class_model or {}).get("classes") or []
+    if not classes:
+        return [], None
+    return [{"label": c, "value": c} for c in classes], classes[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -6719,12 +7828,14 @@ def render_search_traces(search_traces_data, cfg_signals):
     Input("dataset-key", "data"),
 )
 def update_reference_feature_visibility(key):
-    """Turn the Lineage tab and the reference-graph toggle on or off.
+    """Show or hide the Lineage tab and the reference-graph toggle.
 
-    Both are always in the layout, so this only changes whether they can be
-    used. That is what lets the Configuration tab switch the feature on without
-    a restart: a callback cannot be registered after the app starts, but a
-    ``disabled`` flag and a style can be written at any time.
+    Both are always in the layout, so this only changes whether they are
+    visible: the tab carries a ``disabled_style`` that hides it, so setting
+    ``disabled`` takes it out of the tab bar. That is what lets the
+    Configuration tab switch the feature on without a restart: a callback
+    cannot be registered after the app starts, but a ``disabled`` flag and a
+    style can be written at any time.
     """
     ds = get_dataset(key)
     available = bool(ds is not None and ds.ref_adjacency)
@@ -7025,7 +8136,8 @@ _BACKEND_OPTION_NAMES: dict[str, tuple[str, ...]] = {
 
 
 @app.callback(
-    Output("cfg-umap-features", "value"),
+    # Shared with reset_config, which also refills this selector.
+    Output("cfg-umap-features", "value", allow_duplicate=True),
     Output("cfg-features-paste-status", "children"),
     Input("cfg-features-paste-btn", "n_clicks"),
     State("cfg-features-paste", "value"),
@@ -7142,6 +8254,9 @@ def render_config_yaml(_n_clicks, signals, time_window, timebase, options, proje
     Output("centroid-data", "data", allow_duplicate=True),
     Output("outlier-labels", "data", allow_duplicate=True),
     Output("outlier-traces-data", "data", allow_duplicate=True),
+    Output("class-labels", "data", allow_duplicate=True),
+    Output("class-proba", "data", allow_duplicate=True),
+    Output("class-model", "data", allow_duplicate=True),
     Output("search-results", "data", allow_duplicate=True),
     Output("search-traces-data", "data", allow_duplicate=True),
     Output("lin-subject-shot", "data", allow_duplicate=True),
@@ -7157,10 +8272,14 @@ def clear_results_on_new_dataset(_key):
     about coordinates that no longer exist. Drawing them against the new
     embedding would be wrong rather than merely stale.
 
+    A trained classifier goes with them: its feature matrix was built from the
+    columns of the dataset that has just been replaced, so its predictions
+    describe shots as they were measured before, not as they are now.
+
     ``selected-shot`` and ``active-filters`` are deliberately kept: both hold
     shot ids, and the set of shots does not change with the projection.
     """
-    return None, None, {}, None, None, None, None, None, None, None
+    return None, None, {}, None, None, None, None, None, None, None, None, None, None
 
 
 # ---------------------------------------------------------------------------

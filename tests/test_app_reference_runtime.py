@@ -43,6 +43,14 @@ def test_the_lineage_tab_is_present_but_disabled_at_startup(unset_ref_app):
     assert tab.disabled is True
 
 
+def test_the_disabled_lineage_tab_is_hidden_not_greyed_out(unset_ref_app):
+    """Disabled always means "no reference column" for this tab, and then the
+    tab bar must not show it at all. dcc.Tab uses disabled_style in place of
+    style while disabled, so the hiding rides on the same flag."""
+    tab = find_tab(layout_of(unset_ref_app), "lineage")
+    assert tab.disabled_style.get("display") == "none"
+
+
 def test_lineage_explains_what_is_missing_rather_than_failing(unset_ref_app):
     """Every lineage callback goes through _lin_resolve, so one guard there
     gives all of them the same clear empty state."""

@@ -1234,3 +1234,470 @@ def _apply_outlier_color(plot_df: pd.DataFrame, outlier_labels: dict) -> tuple[p
     enriched = enriched[enriched["_is_outlier"].notna()].copy()
     enriched["Outlier"] = enriched["_is_outlier"].apply(lambda v: "Outlier" if int(v) == 1 else "Inlier")
     return enriched.drop(columns=["_is_outlier"]), "Outlier"
+
+
+# ---------------------------------------------------------------------------
+# Supervised classification
+#
+# The subprocess workers below follow the same rule as the clustering ones: a
+# gunicorn worker is forked after BLAS is initialised, so every sklearn call
+# has to happen in a freshly spawned process. That rule applies to the fit, to
+# the predictions, to the 2-D surrogate behind the decision surface and to the
+# SHAP explainer -- anything that touches BLAS.
+# ---------------------------------------------------------------------------
+
+_CLASSIFIER_ALGORITHMS = ("gradient_boosting", "random_forest", "gaussian_process")
+
+# A Gaussian Process fit is O(n^3) in the number of training rows, which stops
+# being interactive long before a shot table does. Above this the training rows
+# are subsampled, and the status line says so.
+_GP_DEFAULT_MAX_TRAIN_ROWS = 2000
+
+
+def _build_classifier(algorithm: str, params: dict, seed: int):
+    """Return an unfitted estimator. Imports live here so the module stays cheap."""
+    if algorithm == "gradient_boosting":
+        from sklearn.ensemble import GradientBoostingClassifier
+
+        return GradientBoostingClassifier(
+            n_estimators=int(params.get("n_estimators", 100)),
+            learning_rate=float(params.get("learning_rate", 0.1)),
+            max_depth=int(params.get("max_depth", 3)),
+            subsample=float(params.get("subsample", 1.0)),
+            random_state=seed,
+        )
+    if algorithm == "random_forest":
+        from sklearn.ensemble import RandomForestClassifier
+
+        max_depth = params.get("max_depth")
+        return RandomForestClassifier(
+            n_estimators=int(params.get("n_estimators", 100)),
+            max_depth=int(max_depth) if max_depth else None,
+            min_samples_leaf=int(params.get("min_samples_leaf", 1)),
+            class_weight="balanced" if params.get("balanced") else None,
+            random_state=seed,
+            n_jobs=1,
+        )
+    if algorithm == "gaussian_process":
+        from sklearn.gaussian_process import GaussianProcessClassifier
+        from sklearn.gaussian_process.kernels import RBF, Matern
+
+        length_scale = float(params.get("length_scale", 1.0))
+        kernel = Matern(length_scale=length_scale, nu=1.5) if params.get("kernel") == "matern" else RBF(length_scale)
+        return GaussianProcessClassifier(
+            kernel=kernel,
+            n_restarts_optimizer=int(params.get("n_restarts_optimizer", 0)),
+            max_iter_predict=int(params.get("max_iter_predict", 100)),
+            random_state=seed,
+        )
+    raise ValueError(f"Unknown algorithm: {algorithm}")
+
+
+def _stratified_subsample(y: np.ndarray, limit: int, seed: int) -> np.ndarray:
+    """Indices of at most *limit* rows, keeping each class's share of the whole."""
+    import numpy as np
+
+    if limit <= 0 or len(y) <= limit:
+        return np.arange(len(y))
+    rng = np.random.default_rng(seed)
+    keep: list[np.ndarray] = []
+    for cls in np.unique(y):
+        idx = np.flatnonzero(y == cls)
+        # At least one row per class, so subsampling can never delete a class.
+        take = max(1, int(round(len(idx) * limit / len(y))))
+        keep.append(rng.choice(idx, size=min(take, len(idx)), replace=False))
+    return np.sort(np.concatenate(keep))
+
+
+def _sklearn_fit_classifier(
+    X_labelled: list,
+    y: list,
+    X_all: list,
+    algorithm: str,
+    params: dict,
+    test_fraction: float,
+    seed: int,
+) -> dict:
+    """Fit, score and predict in one subprocess hop.
+
+    ``X_labelled``/``y`` are the rows that carry a target value; ``X_all`` is
+    every row, so an unlabelled shot still gets a prediction. Returns a dict
+    holding the predictions, the metrics and the pickled fitted estimator --
+    the caller keeps that blob server-side so SHAP can reuse the model without
+    a refit.
+    """
+    import pickle
+
+    import numpy as np
+    from sklearn.metrics import accuracy_score, f1_score
+    from sklearn.model_selection import train_test_split
+
+    Xl = np.asarray(X_labelled, dtype=float)
+    Xa = np.asarray(X_all, dtype=float)
+    yv = np.asarray(y, dtype=int)
+
+    counts = np.bincount(yv)
+    # train_test_split refuses to stratify when a class has a single member,
+    # and a split that small is not worth failing the whole fit over.
+    can_split = test_fraction > 0 and len(yv) >= 4 and counts[counts > 0].min() >= 2
+    if can_split:
+        X_tr, X_te, y_tr, y_te = train_test_split(Xl, yv, test_size=test_fraction, random_state=seed, stratify=yv)
+    else:
+        X_tr, y_tr = Xl, yv
+        X_te = np.empty((0, Xl.shape[1]))
+        y_te = np.empty(0, dtype=int)
+
+    subsampled = 0
+    if algorithm == "gaussian_process":
+        limit = int(params.get("max_train_rows", _GP_DEFAULT_MAX_TRAIN_ROWS))
+        keep = _stratified_subsample(y_tr, limit, seed)
+        if len(keep) < len(y_tr):
+            subsampled = len(keep)
+            X_tr, y_tr = X_tr[keep], y_tr[keep]
+
+    model = _build_classifier(algorithm, params, seed)
+    model.fit(X_tr, y_tr)
+
+    metrics = {
+        "n_train": int(len(y_tr)),
+        "n_test": int(len(y_te)),
+        "subsampled": subsampled,
+        "train_accuracy": float(accuracy_score(y_tr, model.predict(X_tr))),
+        "train_f1": float(f1_score(y_tr, model.predict(X_tr), average="macro", zero_division=0)),
+    }
+    if len(y_te):
+        pred_te = model.predict(X_te)
+        metrics["test_accuracy"] = float(accuracy_score(y_te, pred_te))
+        metrics["test_f1"] = float(f1_score(y_te, pred_te, average="macro", zero_division=0))
+
+    proba = model.predict_proba(Xa)
+    # model.classes_ indexes into the caller's class-name list, which is not
+    # necessarily every class when a rare class sits entirely in one split.
+    return {
+        "model": pickle.dumps(model),
+        "model_classes": [int(c) for c in model.classes_],
+        "proba": proba.tolist(),
+        "background": _stratified_subsample(yv, 200, seed).tolist(),
+        "metrics": metrics,
+    }
+
+
+def _sklearn_surface_grid(
+    xy: list,
+    p: list,
+    x_range: tuple,
+    y_range: tuple,
+    resolution: int,
+    k: int,
+    mask_dist: float,
+) -> dict:
+    """Smooth the per-shot probabilities across the plotted plane.
+
+    The model's features are not the plotted axes -- on the Projection tab they
+    cannot be, because no inverse UMAP exists -- so the background is a 2-D
+    surrogate of the real decision surface rather than the surface itself. A
+    distance-weighted KNN regressor on ``(x, y) -> P(class)`` is enough to show
+    where the boundary falls.
+
+    Cells further than *mask_dist* from any real shot come back as NaN: the
+    model says nothing about a region with no data in it, and painting one
+    invents a boundary.
+    """
+    import numpy as np
+    from sklearn.neighbors import KNeighborsRegressor
+
+    pts = np.asarray(xy, dtype=float)
+    vals = np.asarray(p, dtype=float)
+    gx = np.linspace(x_range[0], x_range[1], resolution)
+    gy = np.linspace(y_range[0], y_range[1], resolution)
+    grid = np.stack(np.meshgrid(gx, gy), axis=-1).reshape(-1, 2)
+
+    # The axes routinely differ by orders of magnitude (a current against a
+    # ratio), so distance is measured in each axis's own span or the shape of
+    # the mask would follow whichever axis happens to be larger.
+    span = np.array(
+        [
+            max(x_range[1] - x_range[0], np.finfo(float).eps),
+            max(y_range[1] - y_range[0], np.finfo(float).eps),
+        ]
+    )
+    knn = KNeighborsRegressor(n_neighbors=min(k, len(pts)), weights="distance").fit(pts / span, vals)
+    z = knn.predict(grid / span)
+
+    dist, _ = knn.kneighbors(grid / span, n_neighbors=1)
+    z = np.where(dist[:, 0] > mask_dist, np.nan, z).reshape(resolution, resolution)
+    # None rather than NaN: a masked cell has to survive the trip through JSON
+    # as a hole in the heatmap, and NaN is not valid JSON.
+    return {
+        "x": gx.tolist(),
+        "y": gy.tolist(),
+        "z": [[None if np.isnan(v) else float(v) for v in row] for row in z],
+    }
+
+
+def _shap_decision_values(model_bytes: bytes, X_background: list, X_row: list, class_index: int) -> dict:
+    """SHAP values and base value for one row and one class."""
+    import pickle
+
+    import numpy as np
+    import shap
+
+    model = pickle.loads(model_bytes)
+    background = np.asarray(X_background, dtype=float)
+    row = np.asarray(X_row, dtype=float).reshape(1, -1)
+
+    try:
+        explainer = shap.TreeExplainer(model)
+        values = explainer.shap_values(row)
+        base = explainer.expected_value
+    except Exception:
+        # Gaussian Processes are not tree models, and a shap version may refuse
+        # a tree model it does not recognise. KernelExplainer works for both.
+        summary = shap.kmeans(background, min(25, len(background)))
+        explainer = shap.KernelExplainer(model.predict_proba, summary)
+        values = explainer.shap_values(row, silent=True)
+        base = explainer.expected_value
+
+    return {
+        "values": _shap_slice(values, class_index).tolist(),
+        "base_value": float(_base_value_for(base, class_index)),
+    }
+
+
+def _shap_slice(values, class_index: int):
+    """One class's SHAP row, across the several shapes shap returns.
+
+    Depending on the model and the shap version this is a list of per-class
+    arrays, a single (1, n_features, n_classes) array, or -- for a binary tree
+    model -- one (1, n_features) array covering the positive class.
+    """
+    import numpy as np
+
+    if isinstance(values, list):
+        return np.asarray(values[min(class_index, len(values) - 1)]).reshape(-1)
+    arr = np.asarray(values)
+    if arr.ndim == 3:
+        return arr[0, :, min(class_index, arr.shape[2] - 1)].reshape(-1)
+    return arr.reshape(-1)
+
+
+def _base_value_for(base, class_index: int) -> float:
+    """The expected value matching the slice _shap_slice returned."""
+    import numpy as np
+
+    arr = np.asarray(base)
+    if arr.ndim == 0:
+        return float(arr)
+    return float(arr.reshape(-1)[min(class_index, arr.size - 1)])
+
+
+def _robust_feature_matrix(df: pd.DataFrame, features: list[str]) -> tuple[np.ndarray, list[str]]:
+    """Impute and robustly scale *features*. Returns (X, used_columns).
+
+    The median and the IQR are used rather than the mean and the standard
+    deviation, because a shot table's tails are real physics, not noise, and a
+    handful of disruptions must not set the scale for every other shot. A
+    column that is entirely NaN carries nothing and is dropped, which is also
+    what SimpleImputer would silently do.
+    """
+    from sklearn.impute import SimpleImputer
+    from sklearn.preprocessing import RobustScaler
+
+    valid = [f for f in features if f in df.columns]
+    if not valid:
+        return np.empty((len(df), 0)), []
+    raw = df[valid].replace([np.inf, -np.inf], np.nan)
+    usable = [c for c in valid if raw[c].notna().any()]
+    if not usable:
+        return np.empty((len(df), 0)), []
+    values = raw[usable].values.astype(float)
+    imputed = SimpleImputer(strategy="median").fit_transform(values)
+    return RobustScaler().fit_transform(imputed), usable
+
+
+def _encode_target(series: pd.Series) -> tuple[np.ndarray, list[str], np.ndarray]:
+    """Encode the target column.
+
+    Returns (codes, class_names, labelled_mask). Rows with no target value are
+    excluded from training by the mask but still get a prediction, so a
+    partially labelled column works as it would in a notebook.
+    """
+    labelled = series.notna().values
+    classes = sorted({_class_name(v) for v in series[labelled]})
+    lookup = {name: i for i, name in enumerate(classes)}
+    codes = np.array([lookup[_class_name(v)] for v in series[labelled]], dtype=int)
+    return codes, classes, labelled
+
+
+def _class_name(value: Any) -> str:
+    """A stable, readable name for one target value.
+
+    Floats that are whole numbers print as integers, so a 0/1 column read back
+    from parquet as float does not label its classes "0.0" and "1.0".
+    """
+    if isinstance(value, (bool, np.bool_)):
+        return str(bool(value))
+    if isinstance(value, (float, np.floating)) and float(value).is_integer():
+        return str(int(value))
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+    return str(value)
+
+
+def candidate_target_cols(df: pd.DataFrame, max_classes: int = 20) -> list[str]:
+    """Columns usable as a classification target.
+
+    A target needs at least two classes to separate and few enough of them to
+    be a classification rather than a regression. Projection coordinates are
+    excluded: they are model output, not a label.
+    """
+    out: list[str] = []
+    for col in df.columns:
+        if col == "shot_id" or is_projection_col(col):
+            continue
+        n = int(df[col].nunique(dropna=True))
+        if 2 <= n <= max_classes:
+            out.append(col)
+    return sorted(out)
+
+
+def _run_classification(
+    df: pd.DataFrame,
+    algorithm: str,
+    features: list[str],
+    target: str,
+    params: dict | None = None,
+    test_fraction: float = 0.25,
+    seed: int = 42,
+) -> dict:
+    """Train a classifier on the labelled shots and predict every shot.
+
+    Returns a dict with a JSON-safe ``result`` for the browser's stores and the
+    pickled ``model`` for the caller's server-side cache. The model is kept out
+    of ``result`` deliberately: a dcc.Store is sent to the browser as JSON.
+    """
+    if algorithm not in _CLASSIFIER_ALGORITHMS:
+        raise ValueError(f"Unknown algorithm: {algorithm}")
+    if not target or target not in df.columns:
+        raise ValueError("Select a target column")
+
+    X_all, used = _robust_feature_matrix(df, features)
+    if not used:
+        raise ValueError("Select at least one feature column with data in it")
+
+    codes, classes, labelled = _encode_target(df[target])
+    if len(classes) < 2:
+        raise ValueError(f"'{target}' has fewer than two classes among the labelled shots")
+    if len(codes) < len(classes) * 2:
+        raise ValueError(f"Not enough labelled shots to train: {len(codes)} row(s), {len(classes)} classes")
+
+    fit = _spawn_sklearn(
+        _sklearn_fit_classifier,
+        X_all[labelled].tolist(),
+        codes.tolist(),
+        X_all.tolist(),
+        algorithm,
+        dict(params or {}),
+        float(test_fraction),
+        int(seed),
+    )
+
+    # model.classes_ holds codes, not positions: widen the probability matrix
+    # back out to every class so column i always means classes[i].
+    proba = np.asarray(fit["proba"], dtype=float)
+    full = np.zeros((proba.shape[0], len(classes)))
+    for col, code in enumerate(fit["model_classes"]):
+        full[:, code] = proba[:, col]
+
+    shot_ids = [int(s) for s in df["shot_id"].values]
+    predicted = full.argmax(axis=1)
+    result = {
+        "labels": {str(sid): classes[int(k)] for sid, k in zip(shot_ids, predicted)},
+        "classes": classes,
+        "proba": {"shot_ids": shot_ids, "values": full.tolist()},
+        "metrics": fit["metrics"],
+        "features": used,
+        "target": target,
+        "algorithm": algorithm,
+    }
+    return {
+        "result": result,
+        "model": fit["model"],
+        "X_background": X_all[labelled][np.asarray(fit["background"], dtype=int)].tolist(),
+        "X_all": X_all.tolist(),
+        "shot_ids": shot_ids,
+    }
+
+
+def _apply_class_color(plot_df: pd.DataFrame, class_labels: dict) -> tuple[pd.DataFrame, str]:
+    """Merge the predicted labels into plot_df. Returns (enriched_df, "label")."""
+    label_map = {int(k): v for k, v in class_labels.items()}
+    enriched = plot_df.copy()
+    enriched["label"] = enriched["shot_id"].map(label_map)
+    return enriched[enriched["label"].notna()].copy(), "label"
+
+
+def decision_surface(
+    xy: np.ndarray,
+    p: np.ndarray,
+    resolution: int = 120,
+    k: int = 12,
+    mask_dist: float = 0.06,
+    log_axes: tuple[bool, bool] = (False, False),
+) -> dict | None:
+    """Grid of P(class) over the plane spanned by *xy*, or None if not drawable.
+
+    *log_axes* says which axes the plot draws logarithmically. Such an axis is
+    worked in log10 throughout -- the fit, the grid spacing and the mask -- so
+    the surface is smooth and evenly sampled in the space the reader is
+    actually looking at, not bunched up against one end of it. The returned
+    coordinates are converted back to data units, which is what Plotly wants
+    even for a log axis; it takes the logarithm itself.
+
+    The range is padded slightly so the surface reaches the edge of the points
+    instead of stopping on top of the outermost ones.
+    """
+    if len(xy) < 3 or len(xy) != len(p):
+        return None
+    xy = np.asarray(xy, dtype=float)
+    p = np.asarray(p, dtype=float)
+
+    keep = np.isfinite(xy).all(axis=1) & np.isfinite(p)
+    for axis, is_log in enumerate(log_axes):
+        # A log axis has nothing to say about zero or a negative value, and
+        # Plotly leaves those points out of the scatter too.
+        if is_log:
+            keep &= xy[:, axis] > 0
+    xy, p = xy[keep], p[keep]
+    if len(xy) < 3:
+        return None
+
+    xy = xy.copy()
+    for axis, is_log in enumerate(log_axes):
+        if is_log:
+            xy[:, axis] = np.log10(xy[:, axis])
+
+    ranges = []
+    for axis in (0, 1):
+        lo, hi = float(xy[:, axis].min()), float(xy[:, axis].max())
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            return None
+        pad = (hi - lo) * 0.03
+        ranges.append((lo - pad, hi + pad))
+
+    grid = _spawn_sklearn(
+        _sklearn_surface_grid,
+        xy.tolist(),
+        p.tolist(),
+        ranges[0],
+        ranges[1],
+        int(resolution),
+        int(k),
+        float(mask_dist),
+    )
+    if grid is None:
+        return None
+    for axis, key in enumerate(("x", "y")):
+        if log_axes[axis]:
+            grid[key] = [float(10.0**v) for v in grid[key]]
+    return grid
