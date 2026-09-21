@@ -283,6 +283,11 @@ Every field in `nice_shot/config.yaml` also has a matching CLI flag — an expli
 | `--max-time SECONDS` | `time_window.max_time` | `1.0` |
 | `--timebase-hz HZ` | `uda.timebase_hz` | _(none)_ |
 | `--projection-method {umap,pca}` | `projection_method` | `umap` |
+| `--n-components N` | `projection_options.n_components` | `2` |
+| `--random-state N` | `projection_options.random_state` | `42` |
+| `--n-neighbors N` | `projection_options.n_neighbors` | `15` |
+| `--min-dist F` | `projection_options.min_dist` | `0.1` |
+| `--metric NAME` | `projection_options.metric` | `euclidean` |
 | `--variable-column NAME` | `variable_column` | _(none)_ |
 | `--umap-features COLUMN [COLUMN ...]` | `umap_features` | _(all numeric columns)_ |
 | `--umap-exclude-features COLUMN [COLUMN ...]` | `umap_exclude_features` | _(none)_ |

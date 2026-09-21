@@ -72,6 +72,26 @@
 # projection_method: umap
 
 # ---------------------------------------------------------------------------
+# Projection options — the hyper-parameters of the projection.
+#
+# n_components and random_state apply to both methods. n_neighbors, min_dist
+# and metric apply to UMAP only, and PCA ignores them. A value for them is kept
+# when the method is pca, so a change back to umap uses it again.
+#
+# The plots draw the first two components. A projection with more components
+# adds the extra ones as columns (umap_3, umap_4 ...) that you can choose as
+# plot axes and as a colour.
+#
+# Changing any of these values makes the app calculate the projection again.
+# ---------------------------------------------------------------------------
+# projection_options:
+#   n_components: 2         # from 2 to 50
+#   random_state: 42        # null for an unseeded, faster UMAP
+#   n_neighbors: 15         # UMAP only, 2 or more
+#   min_dist: 0.1           # UMAP only, from 0.0 to less than 1.0
+#   metric: euclidean       # UMAP only
+
+# ---------------------------------------------------------------------------
 # Variable column — enables long-format mode.
 #
 # Set this when the shot data file holds one row per (shot, variable) pair

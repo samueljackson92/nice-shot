@@ -51,6 +51,20 @@ time_window:
 # Changing this forces the projection cache to be recomputed.
 projection_method: umap
 
+# Hyper-parameters of the projection.
+# n_components and random_state apply to both methods; n_neighbors, min_dist
+# and metric apply to UMAP only. The plots draw the first two components, and
+# any further ones become extra columns (umap_3, umap_4 ...) that you can
+# choose as plot axes. Changing a value here forces the projection cache to be
+# recomputed.
+#
+# projection_options:
+#   n_components: 2
+#   random_state: 42
+#   n_neighbors: 15
+#   min_dist: 0.1
+#   metric: euclidean
+
 # Columns to use as features for the UMAP projection.
 # Defaults to all numeric columns (excluding 'shot') if not set.
 # Changing this list forces the UMAP cache to be recomputed.

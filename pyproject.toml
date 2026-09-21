@@ -74,7 +74,9 @@ select = ["E", "F", "I", "UP"]
 
 [tool.ty.environment]
 python-version = "3.11"
-extra-paths = ["nice_shot"]
+# "tests" is here so the shared helpers in tests/conftest.py resolve. pytest
+# puts that directory on sys.path itself, because tests/ has no __init__.py.
+extra-paths = ["nice_shot", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

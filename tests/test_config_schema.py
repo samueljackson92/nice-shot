@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import get_args
 
 import pytest
 import yaml
 from pydantic import ValidationError
 
-from nice_shot.config_schema import AppConfig, TimeWindow, load_app_config, merge_cli_overrides
+from nice_shot.config_schema import (
+    AppConfig,
+    ProjectionMetric,
+    ProjectionOptions,
+    TimeWindow,
+    load_app_config,
+    merge_cli_overrides,
+)
 
 CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
 
@@ -29,6 +37,11 @@ _NULL_CLI_ARGS = dict(
     plugins=None,
     backend_option=None,
     refresh_interval_seconds=None,
+    n_components=None,
+    random_state=None,
+    n_neighbors=None,
+    min_dist=None,
+    metric=None,
 )
 
 
@@ -154,3 +167,89 @@ def test_load_app_config_reads_file_and_merges(tmp_path):
     assert cfg.backend == "sal"  # CLI override
     assert cfg.projection_method == "pca"  # config value, no CLI override
     assert cfg.signals == ["ip", "ne", "dalpha", "loopv", "plasma_energy"]  # AppConfig default
+
+
+# ---------------------------------------------------------------------------
+# ProjectionOptions
+# ---------------------------------------------------------------------------
+
+
+def test_projection_options_defaults_repeat_the_old_hardcoded_values():
+    """Before these options existed the code used n_components=2, random_state=42
+    and UMAP's own defaults. An existing config must give the same embedding."""
+    opts = AppConfig.model_validate({}).projection_options
+    assert opts.n_components == 2
+    assert opts.random_state == 42
+    assert opts.n_neighbors == 15
+    assert opts.min_dist == 0.1
+    assert opts.metric == "euclidean"
+
+
+@pytest.mark.parametrize("n_components", [1, 0, -1, 51])
+def test_projection_options_rejects_n_components_outside_the_range(n_components):
+    with pytest.raises(ValidationError, match="must be from 2 to 50"):
+        ProjectionOptions(n_components=n_components)
+
+
+@pytest.mark.parametrize("n_components", [2, 3, 50])
+def test_projection_options_accepts_n_components_inside_the_range(n_components):
+    assert ProjectionOptions(n_components=n_components).n_components == n_components
+
+
+@pytest.mark.parametrize("n_neighbors", [1, 0, -5])
+def test_projection_options_rejects_n_neighbors_below_two(n_neighbors):
+    with pytest.raises(ValidationError, match="must be 2 or more"):
+        ProjectionOptions(n_neighbors=n_neighbors)
+
+
+@pytest.mark.parametrize("min_dist", [-0.1, 1.0, 1.5])
+def test_projection_options_rejects_min_dist_outside_the_range(min_dist):
+    with pytest.raises(ValidationError, match="must be from 0.0 to less than 1.0"):
+        ProjectionOptions(min_dist=min_dist)
+
+
+@pytest.mark.parametrize("min_dist", [0.0, 0.5, 0.99])
+def test_projection_options_accepts_min_dist_inside_the_range(min_dist):
+    assert ProjectionOptions(min_dist=min_dist).min_dist == min_dist
+
+
+def test_projection_options_rejects_an_unknown_metric():
+    # The bad value is deliberate, so the type checker is told to allow it: the
+    # Literal stops this at edit time, and pydantic must also stop it at run
+    # time, because the value can come from a YAML file or the UI.
+    with pytest.raises(ValidationError):
+        ProjectionOptions(metric="not-a-metric")  # ty: ignore[invalid-argument-type]
+
+
+def test_projection_options_accepts_every_offered_metric():
+    """The UI builds its dropdown from get_args of the same alias, so each
+    option it can offer must validate."""
+    for metric in get_args(ProjectionMetric):
+        assert ProjectionOptions(metric=metric).metric == metric
+
+
+def test_projection_options_random_state_accepts_none():
+    """None means unseeded, which lets UMAP use its faster parallel path."""
+    assert ProjectionOptions(random_state=None).random_state is None
+
+
+def test_projection_options_keeps_umap_fields_when_the_method_is_pca():
+    """PCA ignores them, but the value must survive a change back to umap --
+    the same rule as uda.timebase_hz under a non-uda backend."""
+    cfg = AppConfig.model_validate(
+        {"projection_method": "pca", "projection_options": {"n_neighbors": 7, "min_dist": 0.3}}
+    )
+    assert cfg.projection_options.n_neighbors == 7
+    assert cfg.projection_options.min_dist == 0.3
+
+
+def test_projection_options_nested_cli_override():
+    raw = merge_cli_overrides({"projection_options": {"n_neighbors": 7}}, _args(min_dist=0.4))
+    cfg = AppConfig.model_validate(raw)
+    assert cfg.projection_options.min_dist == 0.4  # from the CLI
+    assert cfg.projection_options.n_neighbors == 7  # untouched, config value kept
+
+
+def test_projection_options_cli_wins_over_config():
+    raw = merge_cli_overrides({"projection_options": {"n_components": 3}}, _args(n_components=5))
+    assert AppConfig.model_validate(raw).projection_options.n_components == 5

@@ -13,6 +13,7 @@ from nice_shot.analysis import (
     _projection_feature_cols,
     _transform_projection,
 )
+from nice_shot.config_schema import ProjectionOptions
 
 
 class TestProjectionFeatureCols:
@@ -217,3 +218,73 @@ class TestLoadProjectionFile:
         path.write_text("nope")
         with pytest.raises(ValueError, match="Unsupported projection format"):
             _load_projection_file(str(path), synthetic_shot_df)
+
+
+# ---------------------------------------------------------------------------
+# ProjectionOptions reach the reducer
+#
+# These assert the reducer's own attributes rather than the coordinates: that
+# proves the value arrived, and it does not need a real UMAP fit to be stable.
+# ---------------------------------------------------------------------------
+
+
+def test_fit_projection_defaults_match_the_previous_hardcoded_values(synthetic_shot_df):
+    """Omitting options must give exactly what the code did before they existed."""
+    model, projection, _ids = _fit_projection(synthetic_shot_df, method="pca")
+    assert projection.shape[1] == 2
+    assert model.reducer.n_components == 2
+    assert model.reducer.random_state == 42
+
+
+# synthetic_shot_df keeps only 3 usable columns: feature_const has zero
+# variance and feature_sparse is mostly NaN, so both are dropped before the
+# reducer runs. 3 is therefore the ceiling here.
+@pytest.mark.parametrize("n_components", [2, 3])
+def test_fit_projection_honours_n_components(synthetic_shot_df, n_components):
+    _model, projection, _ids = _fit_projection(
+        synthetic_shot_df,
+        method="pca",
+        options=ProjectionOptions(n_components=n_components),
+    )
+    assert projection.shape[1] == n_components
+
+
+def test_transform_projection_keeps_the_fitted_width(synthetic_shot_df):
+    """A refreshed shot must get as many coordinates as the model was fitted with,
+    or the extra columns fill with NaN while the cache silently narrows."""
+    model, projection, _ids = _fit_projection(
+        synthetic_shot_df, method="pca", options=ProjectionOptions(n_components=3)
+    )
+    coords, _shot_ids = _transform_projection(model, synthetic_shot_df)
+    assert coords.shape[1] == projection.shape[1] == 3
+
+
+def test_fit_projection_rejects_more_components_than_usable_columns(synthetic_shot_df):
+    """synthetic_shot_df has a zero-variance and a mostly-NaN column, so the
+    count the reducer gets is below the column count in the file. That is the
+    error users actually hit, so it must name the real number."""
+    with pytest.raises(ValueError, match="usable feature column"):
+        _fit_projection(synthetic_shot_df, method="pca", options=ProjectionOptions(n_components=20))
+
+
+def test_fit_projection_passes_umap_hyperparameters_to_the_reducer(synthetic_shot_df):
+    options = ProjectionOptions(n_neighbors=4, min_dist=0.35, metric="manhattan", random_state=7)
+    model, _projection, _ids = _fit_projection(synthetic_shot_df, method="umap", options=options)
+    assert model.reducer.min_dist == 0.35
+    assert model.reducer.metric == "manhattan"
+    assert model.reducer.random_state == 7
+    assert model.reducer.n_neighbors == 4
+
+
+def test_fit_projection_clamps_n_neighbors_to_the_sample_count(synthetic_shot_df):
+    """UMAP cannot use more neighbours than there are samples. Clamping here
+    keeps the fitted model's recorded parameters truthful."""
+    model, _projection, _ids = _fit_projection(
+        synthetic_shot_df, method="umap", options=ProjectionOptions(n_neighbors=500)
+    )
+    assert model.reducer.n_neighbors <= len(synthetic_shot_df) - 1
+
+
+def test_compute_projection_threads_options_through(synthetic_shot_df):
+    projection, _ids = _compute_projection(synthetic_shot_df, "pca", None, None, ProjectionOptions(n_components=3))
+    assert projection.shape[1] == 3

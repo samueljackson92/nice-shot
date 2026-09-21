@@ -24,12 +24,63 @@ class UDAOptions(BaseModel):
     timebase_hz: float | None = None
 
 
+# Distance metrics offered for the UMAP projection. The UI builds its dropdown
+# from get_args() of this alias, so the widget and the validator cannot drift.
+ProjectionMetric = Literal[
+    "euclidean",
+    "manhattan",
+    "chebyshev",
+    "minkowski",
+    "canberra",
+    "braycurtis",
+    "cosine",
+    "correlation",
+    "hamming",
+    "jaccard",
+]
+
+
+class ProjectionOptions(BaseModel):
+    """Hyper-parameters for the 2-D projection.
+
+    The defaults repeat what the code did before these options existed, so an
+    existing config file gives exactly the same embedding as before.
+
+    ``n_components`` and ``random_state`` apply to both methods. The other
+    three apply to UMAP only, and PCA ignores them. A value for them is kept
+    (not rejected) while the method is ``pca``, so it survives a change back to
+    ``umap`` -- the same reason ``uda.timebase_hz`` is kept when the backend is
+    not ``uda``.
+    """
+
+    n_components: int = 2
+    random_state: int | None = 42
+    n_neighbors: int = 15
+    min_dist: float = 0.1
+    metric: ProjectionMetric = "euclidean"
+
+    @model_validator(mode="after")
+    def check_ranges(self) -> ProjectionOptions:
+        # The scatter plots read the first two components, so one is not usable.
+        # The upper bound catches a typo that would otherwise build thousands of
+        # columns and use all the memory.
+        if not 2 <= self.n_components <= 50:
+            raise ValueError(f"projection_options.n_components ({self.n_components}) must be from 2 to 50")
+        if self.n_neighbors < 2:
+            raise ValueError(f"projection_options.n_neighbors ({self.n_neighbors}) must be 2 or more")
+        # UMAP needs min_dist <= spread, and spread keeps its default of 1.0.
+        if not 0.0 <= self.min_dist < 1.0:
+            raise ValueError(f"projection_options.min_dist ({self.min_dist}) must be from 0.0 to less than 1.0")
+        return self
+
+
 class AppConfig(BaseModel):
     backend: str = "parquet"
     signals: list[str] = ["ip", "ne", "dalpha", "loopv", "plasma_energy"]
     time_window: TimeWindow = TimeWindow()
     uda: UDAOptions = UDAOptions()
     projection_method: Literal["umap", "pca"] = "umap"
+    projection_options: ProjectionOptions = ProjectionOptions()
     variable_column: str | None = None
     umap_features: list[str] | None = None
     umap_exclude_features: list[str] = []
@@ -57,6 +108,11 @@ _CLI_CONFIG_FIELDS: list[tuple[tuple[str, ...], str]] = [
     (("time_window", "max_time"), "max_time"),
     (("uda", "timebase_hz"), "timebase_hz"),
     (("projection_method",), "projection_method"),
+    (("projection_options", "n_components"), "n_components"),
+    (("projection_options", "random_state"), "random_state"),
+    (("projection_options", "n_neighbors"), "n_neighbors"),
+    (("projection_options", "min_dist"), "min_dist"),
+    (("projection_options", "metric"), "metric"),
     (("variable_column",), "variable_column"),
     (("umap_features",), "umap_features"),
     (("umap_exclude_features",), "umap_exclude_features"),

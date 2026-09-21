@@ -165,3 +165,145 @@ def lineage_df() -> pd.DataFrame:
             "ip_str": ["nan", "nan"] + [f"{v * 2:.4f}" for v in ip[2:]],
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Layout tree walkers
+#
+# ``app.layout`` is inspected by several test modules. They go through
+# :func:`layout_of` rather than reading ``mod.app.layout`` directly, so a
+# future change to a callable layout needs no edit here.
+# ---------------------------------------------------------------------------
+
+
+def layout_of(module):
+    """The rendered layout tree of *module*'s Dash app."""
+    return module.app._layout_value()
+
+
+def _walk(node):
+    """Yield *node* and every Dash component below it."""
+    yield node
+    children = getattr(node, "children", None)
+    candidates = children if isinstance(children, (list, tuple)) else [children]
+    for child in candidates:
+        if child is None or isinstance(child, str):
+            continue
+        yield from _walk(child)
+
+
+def component_ids(node) -> list[str]:
+    """Every string component id in a layout subtree.
+
+    Pattern-matching (dict) ids are skipped -- they are matched by shape, not
+    by name, so they cannot be compared against a callback's id string.
+    """
+    return [n.id for n in _walk(node) if isinstance(getattr(n, "id", None), str)]
+
+
+def tab_values(node) -> list[str]:
+    """Every ``dcc.Tab`` value in a layout tree."""
+    return [n.value for n in _walk(node) if type(n).__name__ == "Tab" and isinstance(getattr(n, "value", None), str)]
+
+
+def find_tab(node, value: str):
+    """The ``dcc.Tab`` in a layout tree whose value is *value*, or ``None``."""
+    for n in _walk(node):
+        if type(n).__name__ == "Tab" and getattr(n, "value", None) == value:
+            return n
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Importing app.py more than once
+# ---------------------------------------------------------------------------
+
+
+def import_app(name: str, argv: list[str]):
+    """Import ``nice_shot/app.py`` again under the module name *name*.
+
+    ``app.py`` reads ``sys.argv`` at import time and Python caches modules by
+    name, so each alias gets its own module object and its own globals. This
+    makes it possible to test settings that are fixed at import, such as the
+    reference column or the trace backend.
+
+    Do not use ``importlib.reload``: it rebinds globals in the module object
+    that the session-scoped ``app_module`` fixture already holds, and the tests
+    that share it depend on its accumulated state.
+    """
+    import importlib.util
+    import pathlib
+
+    import nice_shot
+
+    old_argv = sys.argv
+    sys.argv = ["niceshot", *argv]
+    try:
+        app_path = pathlib.Path(nice_shot.__file__).parent / "app.py"
+        spec = importlib.util.spec_from_file_location(name, app_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    finally:
+        sys.argv = old_argv
+    return module
+
+
+def write_shot_table(tmp_path, *, n: int = 12, start: int = 4000, reference: bool = False):
+    """Write a small shot-statistics parquet and return its path.
+
+    Set *reference* to add a ``ref_shot`` column that chains each shot to the
+    one before it, which is what turns the Lineage tab on.
+    """
+    shot_id = np.arange(start, start + n)
+    frame = pd.DataFrame(
+        {
+            "shot_id": shot_id,
+            "feature_1": np.linspace(0.0, 1.0, n),
+            "feature_2": np.linspace(1.0, 0.0, n),
+            "ip_max": np.linspace(600.0, 800.0, n),
+            "scenario": ["H-mode"] * (n // 2) + ["L-mode"] * (n - n // 2),
+        }
+    )
+    if reference:
+        frame["ref_shot"] = [None] + [str(s) for s in shot_id[:-1]]
+    path = tmp_path / "shots.parquet"
+    frame.to_parquet(path, index=False)
+    return path
+
+
+@pytest.fixture(scope="session")
+def app_variant(tmp_path_factory):
+    """Factory for extra imports of ``app.py`` with a given config.
+
+    Usage::
+
+        mod = app_variant("no_ref", {"projection_method": "pca"})
+
+    Each call gets its own temp directory, its own projection cache (the cache
+    key does not include the data path, so a shared path would collide on
+    disk), and its own module name. Results are cached per name.
+    """
+    made: dict[str, object] = {}
+
+    def make(name: str, config: dict, *, reference: bool = False, extra_argv: list[str] | None = None):
+        if name in made:
+            return made[name]
+        tmp_path = tmp_path_factory.mktemp(f"app_{name}")
+        shot_data_path = write_shot_table(tmp_path, reference=reference)
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(config))
+        argv = [
+            str(shot_data_path),
+            "--config",
+            str(config_path),
+            "--umap-cache",
+            str(tmp_path / "projection.npy"),
+            *(extra_argv or []),
+        ]
+        module = import_app(f"nice_shot_app_{name}", argv)
+        made[name] = module
+        return module
+
+    return make

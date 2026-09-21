@@ -1,6 +1,16 @@
 # Configuration
 
-NiceShot reads a YAML config file at startup (`nice_shot/config.yaml` by default, overridable with `--config`). CLI flags take no precedence over config values — they control paths and server settings only.
+NiceShot reads a YAML config file at startup (`nice_shot/config.yaml` by default, overridable with `--config`).
+
+A setting can come from three places. A value from a later place replaces a value from an earlier place:
+
+1. The built-in default.
+2. The config file.
+3. The command line.
+
+Almost every setting below also has a command-line flag of the same name. Run `nice-shot --help` for the list.
+
+The [Configuration tab](#configuration-tab) changes many of these settings while the app runs. Those changes apply to your browser only, and a restart returns to the config file.
 
 ---
 
@@ -68,6 +78,8 @@ Algorithm used to reduce shot statistics to 2-D for the Projection tab.
 
 Changing this setting invalidates the projection cache and forces a recompute.
 
+Set the hyper-parameters of the algorithm with [`projection_options`](#projection_options).
+
 ---
 
 ## `umap_features`
@@ -79,9 +91,64 @@ umap_features:
   - ff_slope
 ```
 
-Columns from the shot statistics file to use as features when computing the projection. Shots with `NaN` in any listed column are excluded. Defaults to all numeric columns (excluding `shot_id`) when omitted.
+Columns from the shot statistics file to use as features when computing the projection. Omit it, or give an empty list, to use every numeric column except `shot_id`.
+
+A shot that has no value in a listed column is still projected: the app uses the mean of the column in its place.
+
+The projection coordinate columns are never used as features, even when this setting is omitted. A coordinate column as an input would put the projection into itself.
 
 Changing this list invalidates the cache.
+
+---
+
+## `umap_exclude_features`
+
+```yaml
+umap_exclude_features:
+  - bad_column
+  - another_bad_column
+```
+
+Columns to remove from the feature set. The app applies this list after it resolves [`umap_features`](#umap_features), or after the default of all numeric columns. Use it to keep one or two columns out of a long feature set, instead of listing all the other columns.
+
+Changing this list invalidates the cache.
+
+---
+
+## `projection_options`
+
+```yaml
+projection_options:
+  n_components: 2         # both methods
+  random_state: 42        # both methods
+  n_neighbors: 15         # umap only
+  min_dist: 0.1           # umap only
+  metric: euclidean       # umap only
+```
+
+The hyper-parameters of the projection.
+
+| Option | Default | Applies to | Description |
+|--------|---------|------------|-------------|
+| `n_components` | `2` | both | Number of dimensions to calculate. A value from 2 to 50. |
+| `random_state` | `42` | both | Seed for the random number generator. Set it to `null` for an unseeded projection, which lets UMAP use more than one processor and is faster, but does not give the same result twice. |
+| `n_neighbors` | `15` | `umap` | Size of the neighbourhood UMAP examines around each shot. A small value shows local structure, a large value shows global structure. A value of 2 or more. The app makes the value smaller if the table has fewer shots than this. |
+| `min_dist` | `0.1` | `umap` | Smallest distance UMAP puts between two points. A small value makes tight clusters, a large value spreads the points out. A value from 0.0 to less than 1.0. |
+| `metric` | `euclidean` | `umap` | How UMAP measures the distance between two shots. One of `euclidean`, `manhattan`, `chebyshev`, `minkowski`, `canberra`, `braycurtis`, `cosine`, `correlation`, `hamming` or `jaccard`. |
+
+PCA ignores the three UMAP options. The app keeps their values, so a change back to `umap` uses them again.
+
+The defaults give the same projection as the versions of NiceShot that had no `projection_options`.
+
+### More than two components
+
+The plots draw the first two components, which are always the columns `umap_x` and `umap_y`. A projection with more components adds the other ones as the columns `umap_3`, `umap_4` and so on, numbered from 1.
+
+These extra columns are ordinary numeric columns. You can select them as the axes of the Pairwise Scatter tab and as the colour of a plot. The app does not put them in the Data Table, in the Lineage comparison or in the similarity index.
+
+`n_components` must not be more than the number of usable feature columns. The app removes a column that holds no values, and a column whose values are all the same, before it calculates the projection, so the number of usable columns can be much smaller than the number of columns in the file. The app gives you the real number in the error message.
+
+Changing any of these values invalidates the cache.
 
 ---
 
@@ -288,32 +355,78 @@ For FAIR MAST's public level2 data specifically, no credentials are required —
 
 ## Configuration tab
 
-The **Configuration** tab in the right-hand pane changes the displayed signals and the time window while the app runs. You do not have to edit the config file and restart.
+The **Configuration** tab in the right-hand pane changes most of the config file while the app runs. You do not have to edit the file and restart.
 
-The tab has these controls:
+The settings apply to your browser only. The server keeps no per-user configuration, so two browsers can use different settings at the same time, and a restart returns to the config file. Use the config file, or a command-line flag, for a value you want at every start. The **Copy as YAML** button helps you do that.
 
-| Control | Effect |
-|---------|--------|
-| **Signals** | Select the signals to show. Type a name to add one that the list does not have. |
+### What each section changes
+
+Each section has a label that tells you when a change takes effect.
+
+| Section | Setting | Label |
+|---------|---------|-------|
+| Signals | [`signals`](#signals) | applies now |
+| Time window | [`time_window`](#time_window) | applies now |
+| Trace backend options | [`uda.timebase_hz`](#uda-options), `backend_options` | applies now |
+| Live updates | [`refresh_interval_seconds`](#refresh_interval_seconds) | applies now |
+| Projection | [`projection_method`](#projection_method), [`projection_options`](#projection_options) | rebuilds the projection |
+| Projection features | [`umap_features`](#umap_features), [`umap_exclude_features`](#umap_exclude_features) | rebuilds the projection |
+| Table columns | [`reference_shot_col`](#reference_shot_col) | rebuilds the projection |
+
+**Applies now** means the app reads the setting for each request. Select **Apply** and the affected pane redraws.
+
+**Rebuilds the projection** means the setting decides which dataset the app uses. Select **Apply** and the app calculates the projection again, then redraws every plot. The Projection tab shows a spinner over the plot while it calculates, and keeps the old plot visible below it. The first calculation for a new set of values can need some seconds. The app keeps the result, so a change back to an earlier set of values is immediate.
+
+### The buttons
+
+| Button | Effect |
+|--------|--------|
+| **Apply** | Use the new values. A value that the app refuses changes nothing, and the message beside the buttons tells you what is wrong. |
+| **Reset to config file** | Put every setting, and every control, back to the config file. |
+| **Copy as YAML** | Show your settings as a config file. Copy the text into your config file, or save it and give it with `--config`, to get these settings at every start. |
 | **Discover signals** | Ask the backend which signals it holds for the selected shot, and put them in the list. Select a shot first. |
-| **min_time** / **max_time** | Crop the traces to this range, in seconds. |
-| **Apply** | Use the new values. The time-trace pane, the Cluster Traces pane, the Outlier Traces pane and the Search pane all redraw. |
-| **Reset to config file** | Put the signal list and the time window back to the values in the config file. |
-| **Active configuration** | Show the settings that only a restart can change, such as the backend and the file paths. |
+| **Use pasted list** | Read a list of column names from the box above it, and select those columns as the projection features. Use this for a long feature set. |
+
+The **Trace backend options** section shows only the controls that the backend in use can read:
+
+| Backend | Shows |
+|---------|-------|
+| `uda`, `sal` | The timebase only. These backends read no options. |
+| `postgres` | The grid of names and values only. |
+| `fairmast` | Both. |
+| `parquet` | Neither, so the section does not appear. |
+| A plugin backend | Both, because a plugin can read anything. |
+
+The app passes a name and value from the grid to the backend, exactly as the `--backend-option` flag does. The names each backend reads are given under [`postgres` options](#postgres-options), [`sql` options](#sql-options) and [`fairmast` options](#fairmast-options), and the tab names them for you above the grid.
 
 **Discover signals** works with the `parquet`, `fairmast` and `postgres` backends. The `uda` and `sal` backends address a signal by name only and cannot list what they hold, so the tab tells you to type the names.
 
 A signal that the selected shot does not have is not an error. The pane plots the signals that are present, and the title above it names the others.
 
+### Results that a new projection replaces
+
+A change that rebuilds the projection moves every point. The app therefore clears the results that describe the old positions: the clusters, the outliers, the list of similar shots and the cluster centre traces. Calculate them again on the new projection.
+
+The app keeps your selected shot and your filters. Both name shots, and the set of shots does not change.
+
+### The reference shot column
+
+Set **reference_shot_col** under **Table columns** to use the [Lineage tab](#the-lineage-tab) and the **Reference graph** button. Clear it to turn both off. You do not have to restart.
+
+The Lineage tab is always in the tab bar. It is switched off, and tells you what is missing, until you set the column.
+
 ### What the tab does not change
 
-The config file is never written. The values apply to your browser only:
+The app never writes your config file.
 
-- They stay in the browser (`sessionStorage`), so they survive a tab refresh but not a new session.
-- Two browsers can show different signals at the same time. The server keeps no per-user configuration.
-- A restart returns to the config file values.
+These settings need a restart, and the **Active configuration** table at the foot of the tab shows them:
 
-Use the config file, or the `--signals` command-line option, for a value you want at every start.
+- The shot statistics file, the config file, and the `--data-dir`, `--umap-cache`, `--projection` and `--shap-data` paths.
+- [`backend`](#backend) and [`variable_column`](#variable_column).
+- The host, the port, the number of workers, and debug mode.
+- `plugins`. The app imports the Python modules in this list. It listens on every network interface and asks for no password, so a module path that a web page could set would let any visitor run code in the server process. Use the config file or `--plugins` for this setting.
+
+That table also gives the process ID of the worker that built the page. The app runs four workers by default, and each one keeps its own copy of the data, so this tells you which worker answered you.
 
 ---
 
@@ -334,6 +447,11 @@ time_window:
   max_time: 1.0
 
 projection_method: umap
+
+projection_options:
+  n_components: 2
+  n_neighbors: 15
+  min_dist: 0.1
 
 umap_features:
   - ip_max

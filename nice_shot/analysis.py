@@ -10,6 +10,7 @@ opens a config file, or touches a Dash app.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,8 +18,47 @@ import numpy as np
 import pandas as pd
 
 from nice_shot.backends import detect_shot_col
+from nice_shot.config_schema import ProjectionOptions
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Projection coordinate columns
+#
+# The first two components are always "umap_x"/"umap_y", so every plot can read
+# a fixed pair of axis names. A projection with more than two components adds
+# "umap_3".."umap_k" -- numbered from 1, so "umap_3" really is the third
+# component. They are ordinary numeric columns, which is what makes them
+# selectable in the Pairwise Scatter and "Color by" pickers.
+#
+# Anything that lists data columns must filter them out through
+# is_projection_col, not through a hardcoded pair, or a projection with more
+# components leaks coordinates into the data table, the lineage comparison and
+# the similarity index.
+# ---------------------------------------------------------------------------
+
+PROJECTION_XY = ("umap_x", "umap_y")
+_EXTRA_PROJECTION_COL = re.compile(r"^umap_\d+$")
+
+
+def is_projection_col(name: str) -> bool:
+    """True if *name* is a projection coordinate column."""
+    return name in PROJECTION_XY or bool(_EXTRA_PROJECTION_COL.match(name))
+
+
+def projection_col_names(n_components: int) -> list[str]:
+    """Column names for an embedding with *n_components* components."""
+    return [*PROJECTION_XY, *(f"umap_{i + 1}" for i in range(2, n_components))]
+
+
+def projection_frame(shot_ids: np.ndarray, coords: np.ndarray) -> pd.DataFrame:
+    """Build the embedding DataFrame for *coords*, whatever its width."""
+    names = projection_col_names(coords.shape[1])
+    frame = pd.DataFrame({"shot_id": shot_ids})
+    for i, name in enumerate(names):
+        frame[name] = coords[:, i]
+    return frame
+
 
 # ---------------------------------------------------------------------------
 # Projection (UMAP / PCA)
@@ -72,16 +112,21 @@ def _fit_projection(
     method: str = "umap",
     umap_features: list[str] | None = None,
     umap_exclude_features: list[str] | None = None,
+    options: ProjectionOptions | None = None,
 ) -> tuple[ProjectionModel, np.ndarray, np.ndarray]:
     """Fit imputer/scaler/reducer on *data* and return (model, projection, shot_ids).
 
     Uses mean imputation for NaN/Inf values. The returned :class:`ProjectionModel`
     can later be reused via :func:`_transform_projection` to project new shots
     without refitting.
+
+    *options* holds the reducer hyper-parameters. Its defaults repeat what this
+    function did before they were configurable, so omitting it changes nothing.
     """
     from sklearn.impute import SimpleImputer
     from sklearn.preprocessing import StandardScaler
 
+    opts = options or ProjectionOptions()
     tag = method.upper()
     feature_cols = _projection_feature_cols(data, umap_features, umap_exclude_features)
     log.info(
@@ -148,6 +193,17 @@ def _fit_projection(
     if X.shape[1] == 0:
         raise ValueError("No columns with finite variance remain after filtering. Check your feature data.")
 
+    # Report this before the reducer runs: the column count here is what the
+    # reducer actually gets, and it can be far below the number of columns in
+    # the file because the two filter stages above drop columns.
+    if opts.n_components > X.shape[1]:
+        raise ValueError(
+            f"projection_options.n_components ({opts.n_components}) is more than the "
+            f"{X.shape[1]} usable feature column(s) that remain after all-NaN and "
+            f"zero-variance columns were dropped. Lower n_components, or give more "
+            f"columns in umap_features."
+        )
+
     log.info("[%s] fitting on %d rows x %d columns", tag, X.shape[0], X.shape[1])
     scaler_cols = X.columns.tolist()
     scaler = StandardScaler()
@@ -156,11 +212,19 @@ def _fit_projection(
     if method == "pca":
         from sklearn.decomposition import PCA
 
-        reducer = PCA(n_components=2, random_state=42)
+        reducer = PCA(n_components=opts.n_components, random_state=opts.random_state)
     else:
         from umap import UMAP
 
-        reducer = UMAP(n_components=2, random_state=42)
+        # n_neighbors cannot exceed the sample count; UMAP warns and clamps, but
+        # clamping here keeps the fitted model's parameters honest.
+        reducer = UMAP(
+            n_components=opts.n_components,
+            random_state=opts.random_state,
+            n_neighbors=min(opts.n_neighbors, max(2, X.shape[0] - 1)),
+            min_dist=opts.min_dist,
+            metric=opts.metric,
+        )
     projection = reducer.fit_transform(X_scaled)
 
     model = ProjectionModel(
@@ -199,13 +263,14 @@ def _compute_projection(
     method: str = "umap",
     umap_features: list[str] | None = None,
     umap_exclude_features: list[str] | None = None,
+    options: ProjectionOptions | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return (projection, shot_ids) using mean imputation for NaN/Inf values.
 
     Thin wrapper around :func:`_fit_projection` for callers that don't need the
     fitted model (e.g. existing tests, one-shot scripts).
     """
-    _model, projection, shot_ids = _fit_projection(data, method, umap_features, umap_exclude_features)
+    _model, projection, shot_ids = _fit_projection(data, method, umap_features, umap_exclude_features, options)
     return projection, shot_ids
 
 
@@ -342,8 +407,10 @@ _UNCHANGED_RTOL = 1e-9
 _MAX_LINEAGE = 100
 
 # Columns never offered for comparison: the shot ID and the projection coords.
-# Mirrors _table_cols in nice_shot.app.
-_ALWAYS_EXCLUDED = ("shot_id", "umap_x", "umap_y")
+# Mirrors _table_cols in nice_shot.app. Coordinate columns go through
+# is_projection_col so a projection with more than two components does not make
+# the tab report "component 4 changed by 0.3 sigma".
+_ALWAYS_EXCLUDED = ("shot_id",)
 
 REFERENCE_METRICS: tuple[str, ...] = ("zscore", "percent", "absolute")
 REFERENCE_SCOPES: tuple[str, ...] = ("chain", "component", "siblings")
@@ -560,7 +627,7 @@ def reference_compare_columns(
     (``scenario__name``, ``shot_type``, ``gas_valves``) often does.
     """
     dropped = set(_ALWAYS_EXCLUDED) | {c for c in (exclude or []) if c}
-    candidates = [c for c in df.columns if c not in dropped]
+    candidates = [c for c in df.columns if c not in dropped and not is_projection_col(c)]
     numeric, categorical = _classify_reference_columns(df, candidates)
     ordered = list(numeric)
     if include_categorical:

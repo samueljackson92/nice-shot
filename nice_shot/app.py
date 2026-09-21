@@ -6,6 +6,7 @@ Run from project root: uv run python nice_shot/app.py
 import argparse
 import hashlib
 import importlib
+import json
 import logging
 import math
 import os
@@ -13,9 +14,10 @@ import re
 import sys
 import tempfile
 import threading
-from dataclasses import dataclass, field
+from collections import OrderedDict
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import dash
 import joblib
@@ -23,6 +25,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import yaml
 from dash import ALL, Input, Output, State, dash_table, dcc, html
 from plotly.subplots import make_subplots
 from pydantic import ValidationError
@@ -45,7 +48,10 @@ from nice_shot.analysis import (
     compute_active_filter_ids,
     get_reference_graph,
     get_reference_lineage,
+    is_projection_col,
     lineage_change_matrix,
+    projection_col_names,
+    projection_frame,
     rank_lineage_changes,
     reference_compare_columns,
     select_changed_columns,
@@ -77,7 +83,13 @@ else:
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 sys.path.insert(0, _HERE)
-from config_schema import TimeWindow, load_app_config  # noqa: E402
+from config_schema import (  # noqa: E402
+    AppConfig,
+    ProjectionMetric,
+    ProjectionOptions,
+    TimeWindow,
+    load_app_config,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -183,6 +195,38 @@ def parse_args() -> argparse.Namespace:
         help="Algorithm for the 2D projection (overrides config.yaml: projection_method)",
     )
     parser.add_argument(
+        "--n-components",
+        type=int,
+        default=None,
+        help="Number of projection dimensions; the plots use the first two "
+        "(overrides config.yaml: projection_options.n_components)",
+    )
+    parser.add_argument(
+        "--random-state",
+        type=int,
+        default=None,
+        help="Random seed for the projection (overrides config.yaml: projection_options.random_state)",
+    )
+    parser.add_argument(
+        "--n-neighbors",
+        type=int,
+        default=None,
+        help="UMAP only: neighbourhood size (overrides config.yaml: projection_options.n_neighbors)",
+    )
+    parser.add_argument(
+        "--min-dist",
+        type=float,
+        default=None,
+        help="UMAP only: minimum distance between points in the embedding "
+        "(overrides config.yaml: projection_options.min_dist)",
+    )
+    parser.add_argument(
+        "--metric",
+        default=None,
+        choices=list(get_args(ProjectionMetric)),
+        help="UMAP only: distance metric (overrides config.yaml: projection_options.metric)",
+    )
+    parser.add_argument(
         "--variable-column",
         default=None,
         help="Column holding the variable name in long-format shot data (overrides config.yaml: variable_column)",
@@ -255,6 +299,7 @@ MIN_TIME: float = _cfg.time_window.min_time
 MAX_TIME: float = _cfg.time_window.max_time
 UDA_TIMEBASE_HZ: float | None = _cfg.uda.timebase_hz
 PROJECTION_METHOD: str = _cfg.projection_method
+PROJECTION_OPTIONS: ProjectionOptions = _cfg.projection_options
 VARIABLE_COLUMN: str | None = _cfg.variable_column
 UMAP_FEATURES: list[str] | None = _cfg.umap_features
 UMAP_EXCLUDE_FEATURES: list[str] = _cfg.umap_exclude_features
@@ -313,6 +358,139 @@ if not SHOW_TRACES:
 VARIABLES: list[str] = _variable_backend.variables(SHOT_DATA_PATH) if _variable_backend else []
 
 # ---------------------------------------------------------------------------
+# DatasetKey — what a cached Dataset is built from.
+#
+# This used to be the selected variable alone. The Configuration tab can now
+# change the projection and the reference column too, and each combination
+# produces a different Dataset, so all of them belong in the cache key.
+#
+# The key is frozen and hashable so it can index the cache directly, and it
+# round-trips through a dcc.Store as a plain dict. from_store() puts the lists
+# back into tuples: JSON has no tuple, and a list would make the key
+# unhashable, which would silently turn every lookup into a miss and refit the
+# projection on every callback.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetKey:
+    """Everything that decides which :class:`Dataset` a request needs."""
+
+    variable: str | None = None
+    projection_method: str = "umap"
+    umap_features: tuple[str, ...] | None = None
+    umap_exclude_features: tuple[str, ...] = ()
+    # The projection hyper-parameters as canonical JSON. ProjectionOptions is a
+    # pydantic model and so is not hashable; the dump also goes straight into
+    # the cache hash, and a field added later is covered without an edit here.
+    projection_options_json: str = ""
+    reference_shot_col: str | None = None
+
+    def to_store(self) -> dict[str, Any]:
+        """A JSON-safe dict for a dcc.Store."""
+        return {
+            "variable": self.variable,
+            "projection_method": self.projection_method,
+            "umap_features": list(self.umap_features) if self.umap_features is not None else None,
+            "umap_exclude_features": list(self.umap_exclude_features),
+            "projection_options_json": self.projection_options_json,
+            "reference_shot_col": self.reference_shot_col,
+        }
+
+    @classmethod
+    def from_store(cls, data: dict[str, Any]) -> "DatasetKey":
+        """Rebuild a key from a dcc.Store value, restoring the tuples."""
+        features = data.get("umap_features")
+        return cls(
+            variable=data.get("variable"),
+            projection_method=data.get("projection_method") or PROJECTION_METHOD,
+            umap_features=tuple(features) if features is not None else None,
+            umap_exclude_features=tuple(data.get("umap_exclude_features") or ()),
+            projection_options_json=data.get("projection_options_json") or _projection_options_json(),
+            reference_shot_col=data.get("reference_shot_col"),
+        )
+
+    def projection_options(self) -> ProjectionOptions:
+        """The hyper-parameters this key was built with."""
+        return ProjectionOptions.model_validate_json(self.projection_options_json)
+
+    def projection_fields(self) -> dict[str, Any]:
+        """The subset that decides the embedding.
+
+        ``reference_shot_col`` is deliberately absent: it changes the reference
+        graph and so the Dataset, but not where any point lands, so changing it
+        must not throw away a fitted projection.
+        """
+        return {
+            "variable": self.variable,
+            "projection_method": self.projection_method,
+            "umap_features": sorted(self.umap_features) if self.umap_features is not None else None,
+            "umap_exclude_features": sorted(self.umap_exclude_features),
+            "projection_options": self.projection_options_json,
+        }
+
+
+def _projection_options_json() -> str:
+    """The config file's projection options as canonical JSON."""
+    return json.dumps(PROJECTION_OPTIONS.model_dump(), sort_keys=True)
+
+
+def default_dataset_key(variable: str | None = None) -> DatasetKey:
+    """The key described by the config file and the command line."""
+    return DatasetKey(
+        variable=variable,
+        projection_method=PROJECTION_METHOD,
+        umap_features=tuple(UMAP_FEATURES) if UMAP_FEATURES is not None else None,
+        umap_exclude_features=tuple(UMAP_EXCLUDE_FEATURES),
+        projection_options_json=_projection_options_json(),
+        reference_shot_col=REFERENCE_SHOT_COL,
+    )
+
+
+def _dataset_key_from_stores(
+    variable: str | None,
+    projection: dict[str, Any] | None,
+    reference: dict[str, Any] | None,
+) -> DatasetKey:
+    """Build a key from the Configuration tab's stores.
+
+    Each store holds ``None`` until Apply has run in this browser, and a dict
+    afterwards. A dict whose field is ``null`` means the user cleared the
+    setting, which is different from never having touched it.
+    """
+    base = default_dataset_key(variable)
+    if projection:
+        options = projection.get("projection_options")
+        features = projection.get("umap_features")
+        base = replace(
+            base,
+            projection_method=projection.get("projection_method") or base.projection_method,
+            umap_features=tuple(features) if features else None,
+            umap_exclude_features=tuple(projection.get("umap_exclude_features") or ()),
+            projection_options_json=(json.dumps(options, sort_keys=True) if options else base.projection_options_json),
+        )
+    if reference is not None:
+        base = replace(base, reference_shot_col=reference.get("value"))
+    return base
+
+
+def _coerce_key(value: DatasetKey | dict[str, Any] | str | None) -> DatasetKey:
+    """Accept a key, a store value, a bare variable name, or nothing.
+
+    ``None`` means "whatever the config file says", which keeps the old
+    ``get_dataset(None)`` call shape working for flat mode and for the tests.
+    A bare string is read as a variable name for the same reason.
+    """
+    if isinstance(value, DatasetKey):
+        return value
+    if isinstance(value, dict):
+        return DatasetKey.from_store(value)
+    if isinstance(value, str):
+        return default_dataset_key(value)
+    return default_dataset_key(None)
+
+
+# ---------------------------------------------------------------------------
 # UMAP / PCA projection — fitted once, then reused: new shots are transformed
 # onto the existing embedding (see _transform_projection) rather than refit.
 #
@@ -325,28 +503,53 @@ VARIABLES: list[str] = _variable_backend.variables(SHOT_DATA_PATH) if _variable_
 # ---------------------------------------------------------------------------
 
 
-def _umap_cache_hash(variable: str | None) -> str:
+def _umap_cache_hash(key: DatasetKey | dict[str, Any] | str | None = None) -> str:
+    """The cache key for one fitted projection.
+
+    It covers the shot data path, the feature selection, the method and every
+    hyper-parameter -- everything that changes the embedding. It does **not**
+    cover the rows, so appending shots never forces a refit; new rows are
+    transformed onto the fitted model instead (see :func:`refresh_dataset`).
+
+    The path is part of the key because two different shot statistics files
+    with the same ``umap_features`` would otherwise share one embedding and one
+    fitted model, and the second file's shots would be transformed onto the
+    first file's projection.
+
+    The options are hashed as a whole dump rather than field by field, so a
+    field added to :class:`ProjectionOptions` later is covered without an edit
+    here.
+    """
+    key = _coerce_key(key)
     h = hashlib.md5()
-    features_key = ",".join(sorted(UMAP_FEATURES)) if UMAP_FEATURES else "__all__"
-    h.update(features_key.encode())
-    h.update((",".join(sorted(UMAP_EXCLUDE_FEATURES))).encode())
-    h.update(PROJECTION_METHOD.encode())
-    h.update(b"modelversion:2")  # invalidates caches from before fitted-model persistence
-    h.update((variable or "__all__").encode())
+    h.update(json.dumps(key.projection_fields(), sort_keys=True).encode())
+    h.update(os.path.abspath(SHOT_DATA_PATH).encode())
+    # modelversion:3 adds the shot data path and the projection options. Every
+    # cache written before it misses once and refits once -- the same one-time
+    # cost described above.
+    h.update(b"modelversion:3")
     return h.hexdigest()
 
 
-def _umap_cache_path(variable: str | None) -> str:
-    """Cache path for *variable* — each variable is projected and cached separately."""
-    if variable is None:
-        return UMAP_CACHE_PATH
+def _umap_cache_path(key: DatasetKey | dict[str, Any] | str | None = None) -> str:
+    """Cache path for *key*.
+
+    Each variable is projected and cached separately, and a short hash of the
+    projection settings is appended so two settings cannot fight over one
+    path. The ``.hash`` sidecar written next to it stays the real guard -- this
+    only keeps the files apart.
+    """
+    key = _coerce_key(key)
     stem, ext = os.path.splitext(UMAP_CACHE_PATH)
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in variable)
-    return f"{stem}.{safe}{ext}"
+    suffix = _umap_cache_hash(key)[:8]
+    if key.variable is None:
+        return f"{stem}.{suffix}{ext}"
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in key.variable)
+    return f"{stem}.{safe}.{suffix}{ext}"
 
 
-def _umap_model_path(variable: str | None) -> str:
-    return _umap_cache_path(variable) + ".model.joblib"
+def _umap_model_path(key: DatasetKey | dict[str, Any] | str | None = None) -> str:
+    return _umap_cache_path(key) + ".model.joblib"
 
 
 def _atomic_save(path: str, save_fn) -> None:
@@ -371,14 +574,32 @@ def _np_save_exact(path: str, arr: np.ndarray) -> None:
         np.save(f, arr)
 
 
+def _model_n_components(model: ProjectionModel | None) -> int:
+    """How many components *model* was fitted with.
+
+    Read from the fitted reducer, never from the current configuration: a cache
+    written under an earlier n_components must be read at its own width.
+    """
+    if model is None:
+        return 2
+    return int(getattr(model.reducer, "n_components", 2))
+
+
 def _project_new_rows(model: ProjectionModel, new_rows: pd.DataFrame) -> pd.DataFrame:
-    """Transform *new_rows* onto *model* (never refits). Returns shot_id/umap_x/umap_y."""
+    """Transform *new_rows* onto *model* (never refits).
+
+    The frame is as wide as the fitted model, so a refreshed shot gets every
+    coordinate the existing rows have. Taking the width from *model* rather
+    than from the current config matters: a cache fitted under an earlier
+    n_components must keep its own width, or the saved array and its hash
+    disagree and nothing reports it.
+    """
     coords, shot_ids = _transform_projection(model, new_rows)
-    return pd.DataFrame({"shot_id": shot_ids, "umap_x": coords[:, 0], "umap_y": coords[:, 1]})
+    return projection_frame(shot_ids, coords)
 
 
 def get_projection_model(
-    data: pd.DataFrame, variable: str | None = None
+    data: pd.DataFrame, key: DatasetKey | None = None
 ) -> tuple[ProjectionModel, np.ndarray, np.ndarray]:
     """Return (model, projection, shot_ids) covering every shot_id in *data*.
 
@@ -387,11 +608,12 @@ def get_projection_model(
     (never refit) and merged in, and the extended embedding is re-saved so a
     future process restart doesn't need to re-transform them either.
     """
-    cache_path = _umap_cache_path(variable)
+    key = _coerce_key(key)
+    cache_path = _umap_cache_path(key)
     hash_path = cache_path + ".hash"
     shots_path = cache_path + ".shots.npy"
-    model_path = _umap_model_path(variable)
-    current_hash = _umap_cache_hash(variable)
+    model_path = _umap_model_path(key)
+    current_hash = _umap_cache_hash(key)
 
     cache_valid = all(os.path.exists(p) for p in [cache_path, hash_path, shots_path, model_path])
     if cache_valid:
@@ -406,10 +628,14 @@ def get_projection_model(
     else:
         log.info(
             "Fitting %s projection (this may take a moment)...",
-            PROJECTION_METHOD.upper(),
+            key.projection_method.upper(),
         )
         model, cached_projection, cached_shot_ids = _fit_projection(
-            data, method=PROJECTION_METHOD, umap_features=UMAP_FEATURES, umap_exclude_features=UMAP_EXCLUDE_FEATURES
+            data,
+            method=key.projection_method,
+            umap_features=list(key.umap_features) if key.umap_features is not None else None,
+            umap_exclude_features=list(key.umap_exclude_features),
+            options=key.projection_options(),
         )
         _atomic_save(model_path, lambda tmp: joblib.dump(model, tmp))
         _atomic_save(cache_path, lambda tmp: _np_save_exact(tmp, cached_projection))
@@ -426,7 +652,8 @@ def get_projection_model(
 
     log.info("Transforming %d new shot(s) onto the existing projection...", len(new_rows))
     new_emb = _project_new_rows(model, new_rows)
-    all_projection = np.concatenate([cached_projection, new_emb[["umap_x", "umap_y"]].values], axis=0)
+    coord_cols = projection_col_names(cached_projection.shape[1])
+    all_projection = np.concatenate([cached_projection, new_emb[coord_cols].values], axis=0)
     all_shot_ids = np.concatenate([cached_shot_ids, new_emb["shot_id"].values.astype(np.int64)], axis=0)
 
     _atomic_save(cache_path, lambda tmp: _np_save_exact(tmp, all_projection))
@@ -479,21 +706,15 @@ def _numeric_cols_of(data: pd.DataFrame) -> list[str]:
     return sorted(c for c in data.select_dtypes(include=[np.number]).columns if c != "shot_id")
 
 
-def _project_dataset(data: pd.DataFrame, variable: str | None) -> tuple[pd.DataFrame, str, str, ProjectionModel | None]:
+def _project_dataset(data: pd.DataFrame, key: DatasetKey) -> tuple[pd.DataFrame, str, str, ProjectionModel | None]:
     """Merge 2D projection coordinates onto *data*. Returns (data, x_label, y_label, model)."""
     if PROJECTION_PATH is not None:
         emb, x_label, y_label = _load_projection_file(PROJECTION_PATH, data)
         data = data.merge(emb, on="shot_id", how="inner")
         return data, x_label, y_label, None
 
-    model, projection, proj_shot_ids = get_projection_model(data, variable)
-    emb = pd.DataFrame(
-        {
-            "shot_id": proj_shot_ids,
-            "umap_x": projection[:, 0],
-            "umap_y": projection[:, 1],
-        }
-    )
+    model, projection, proj_shot_ids = get_projection_model(data, key)
+    emb = projection_frame(proj_shot_ids, projection)
     data = data.merge(emb, on="shot_id", how="inner")
     return data, "Dim 1", "Dim 2", model
 
@@ -504,14 +725,22 @@ def _finalize_dataset(
     x_label: str,
     y_label: str,
     shap_idx: dict[int, int],
+    key: DatasetKey | None = None,
 ) -> Dataset:
     """Build the similarity index and reference graph from an already-projected *data*.
 
     Cheap enough to rerun on every refresh (unlike the projection fit itself) —
     see :func:`refresh_dataset`.
     """
-    feature_cols = _numeric_cols_of(data)
-    search_cols = [f for f in (UMAP_FEATURES or feature_cols) if f in data.columns]
+    key = _coerce_key(key)
+    umap_features = list(key.umap_features) if key.umap_features is not None else None
+    reference_shot_col = key.reference_shot_col
+    # Exclude the projection coordinates. They are numeric columns sitting in
+    # the same frame, so the default "all numeric columns" would otherwise feed
+    # the embedding back in as similarity features -- and a projection with
+    # more components would weight it more heavily still.
+    feature_cols = [c for c in _numeric_cols_of(data) if not is_projection_col(c)]
+    search_cols = [f for f in (umap_features or feature_cols) if f in data.columns]
     search_raw = data[["shot_id"] + search_cols].copy()
     search_raw[search_cols] = search_raw[search_cols].replace([np.inf, -np.inf], np.nan)
     # Impute with column means so every shot is searchable, even those with missing features.
@@ -523,17 +752,17 @@ def _finalize_dataset(
 
     ref_adjacency: dict[int, list[int]] = {}
     ref_parent: dict[int, int] = {}
-    if REFERENCE_SHOT_COL and REFERENCE_SHOT_COL in data.columns:
-        ref_adjacency, ref_parent = _build_reference_graph(data, REFERENCE_SHOT_COL)
+    if reference_shot_col and reference_shot_col in data.columns:
+        ref_adjacency, ref_parent = _build_reference_graph(data, reference_shot_col)
         if ref_adjacency:
             log.info(
                 "Reference graph: '%s' — %d edges, %d unique nodes",
-                REFERENCE_SHOT_COL,
+                reference_shot_col,
                 len(ref_parent),
                 len(ref_adjacency),
             )
         else:
-            log.warning("reference_shot_col='%s' produced no valid edges.", REFERENCE_SHOT_COL)
+            log.warning("reference_shot_col='%s' produced no valid edges.", reference_shot_col)
 
     # Lineage-tab precomputation. Only worth doing when there is a reference
     # graph to walk, and deliberately independent of `numeric_cols`: the tab
@@ -546,7 +775,7 @@ def _finalize_dataset(
     ref_stds: pd.Series | None = None
     if ref_adjacency:
         # ref_adjacency is only non-empty when the column is set, but be explicit for the type.
-        exclude = [REFERENCE_SHOT_COL] if REFERENCE_SHOT_COL else []
+        exclude = [reference_shot_col] if reference_shot_col else []
         compare = reference_compare_columns(data, search_cols=search_cols, exclude=exclude)
         numeric, _categorical = _classify_reference_columns(data, compare)
         ref_compare_cols = tuple(compare)
@@ -576,49 +805,71 @@ def _finalize_dataset(
     )
 
 
-def _build_dataset(data: pd.DataFrame, variable: str | None) -> Dataset:
+def _build_dataset(data: pd.DataFrame, key: DatasetKey) -> Dataset:
     """Project *data*, build the similarity index and the reference graph."""
     # Positional index for SHAP lookup, taken before the projection merge drops rows.
     # The .nc file uses 0-based indices matching the original sorted shot order.
     # Fixed at first build — refresh_dataset() carries it over unchanged, since it
     # indexes into a static SHAP file that never grows with new shots.
     shap_idx = {int(s): i for i, s in enumerate(data["shot_id"].values) if pd.notna(s)}
-    data, x_label, y_label, model = _project_dataset(data, variable)
-    return _finalize_dataset(data, model, x_label, y_label, shap_idx)
+    data, x_label, y_label, model = _project_dataset(data, key)
+    return _finalize_dataset(data, model, x_label, y_label, shap_idx, key)
 
 
-_dataset_cache: dict[str | None, Dataset] = {}
+# Bounded, because the Configuration tab can now ask for a new key at will and
+# each Dataset holds a full DataFrame, a scaled feature matrix and a fitted
+# NearestNeighbors. Least-recently-used entries are dropped.
+_DATASET_CACHE_MAX = 4
+_dataset_cache: OrderedDict[DatasetKey, Dataset] = OrderedDict()
 _dataset_cache_lock = threading.Lock()
 
 
-def get_dataset(variable: str | None) -> Dataset | None:
-    """Return the dataset for *variable*, building and caching it on first use.
+def _cache_get(key: DatasetKey) -> Dataset | None:
+    with _dataset_cache_lock:
+        ds = _dataset_cache.get(key)
+        if ds is not None:
+            _dataset_cache.move_to_end(key)
+        return ds
+
+
+def _cache_put(key: DatasetKey, ds: Dataset) -> None:
+    with _dataset_cache_lock:
+        _dataset_cache[key] = ds
+        _dataset_cache.move_to_end(key)
+        while len(_dataset_cache) > _DATASET_CACHE_MAX:
+            _dataset_cache.popitem(last=False)
+
+
+def get_dataset(key: DatasetKey | dict[str, Any] | str | None) -> Dataset | None:
+    """Return the dataset for *key*, building and caching it on first use.
+
+    *key* is a :class:`DatasetKey`, a value read from the ``dataset-key`` store,
+    or ``None`` for whatever the config file says.
 
     Returns ``None`` in long-format mode until the user picks a variable — that
     is the signal for callbacks to render their "select a variable" empty state.
     Once built, a dataset stays cached until :func:`refresh_dataset` replaces it
     (e.g. via the periodic poll callback) — it is never silently reloaded.
     """
-    with _dataset_cache_lock:
-        ds = _dataset_cache.get(variable)
+    key = _coerce_key(key)
+    ds = _cache_get(key)
     if ds is not None:
         return ds
 
     if _variable_backend is not None:
-        if variable is None:
+        if key.variable is None:
             return None
-        data = _variable_backend.load_variable(SHOT_DATA_PATH, variable)
+        data = _variable_backend.load_variable(SHOT_DATA_PATH, key.variable)
     else:
         assert _flat_backend is not None  # exactly one backend is created at startup
         data = _flat_backend.load(SHOT_DATA_PATH)
-    ds = _build_dataset(data, variable)
+    ds = _build_dataset(data, key)
 
-    with _dataset_cache_lock:
-        _dataset_cache[variable] = ds
+    _cache_put(key, ds)
     return ds
 
 
-def refresh_dataset(variable: str | None) -> int | None:
+def refresh_dataset(key: DatasetKey | dict[str, Any] | str | None) -> int | None:
     """Poll the backend for shots newer than the current dataset and merge them in.
 
     Never refits the projection — new rows are transformed onto the existing
@@ -627,8 +878,8 @@ def refresh_dataset(variable: str | None) -> int | None:
     were found, or refresh isn't supported (``--projection`` mode has no fitted
     model to reuse).
     """
-    with _dataset_cache_lock:
-        ds = _dataset_cache.get(variable)
+    key = _coerce_key(key)
+    ds = _cache_get(key)
     if ds is None or ds.df.empty:
         return None
     if ds.model is None:
@@ -640,13 +891,13 @@ def refresh_dataset(variable: str | None) -> int | None:
         if _variable_backend is not None:
             # A cached Dataset only ever exists for a real variable in
             # long-format mode (get_dataset(None) returns None without caching).
-            assert variable is not None
-            new_rows = _variable_backend.poll_new_variable(SHOT_DATA_PATH, variable, since_id)
+            assert key.variable is not None
+            new_rows = _variable_backend.poll_new_variable(SHOT_DATA_PATH, key.variable, since_id)
         else:
             assert _flat_backend is not None
             new_rows = _flat_backend.poll_new(SHOT_DATA_PATH, since_id)
     except Exception:
-        log.exception("refresh_dataset: poll_new failed for variable=%r", variable)
+        log.exception("refresh_dataset: poll_new failed for variable=%r", key.variable)
         return None
 
     if new_rows is None or new_rows.empty:
@@ -656,26 +907,27 @@ def refresh_dataset(variable: str | None) -> int | None:
     new_rows = new_rows.merge(emb, on="shot_id", how="inner")
     combined = pd.concat([ds.df, new_rows], ignore_index=True)
 
-    new_ds = _finalize_dataset(combined, ds.model, ds.x_label, ds.y_label, ds.shap_idx)
+    new_ds = _finalize_dataset(combined, ds.model, ds.x_label, ds.y_label, ds.shap_idx, key)
 
-    cache_path = _umap_cache_path(variable)
-    all_projection = combined[["umap_x", "umap_y"]].values
+    cache_path = _umap_cache_path(key)
+    # The width follows the fitted model, so the saved array keeps matching the
+    # hash that describes it even if the configured n_components has changed.
+    all_projection = combined[projection_col_names(_model_n_components(ds.model))].values
     all_shot_ids = combined["shot_id"].values.astype(np.int64)
     _atomic_save(cache_path, lambda tmp: _np_save_exact(tmp, all_projection))
     _atomic_save(cache_path + ".shots.npy", lambda tmp: _np_save_exact(tmp, all_shot_ids))
 
-    with _dataset_cache_lock:
-        _dataset_cache[variable] = new_ds
+    _cache_put(key, new_ds)
     log.info("refresh_dataset: merged %d new shot(s), latest shot_id=%d", len(new_rows), int(all_shot_ids.max()))
     return int(all_shot_ids.max())
 
 
-def _require_dataset(variable: str | None) -> Dataset:
+def _require_dataset(key: DatasetKey | dict[str, Any] | str | None) -> Dataset:
     """Like :func:`get_dataset` but never ``None`` — for flat mode, where the
     single dataset is always available."""
-    ds = get_dataset(variable)
+    ds = get_dataset(key)
     if ds is None:
-        raise RuntimeError(f"No dataset available for variable {variable!r}")
+        raise RuntimeError(f"No dataset available for key {_coerce_key(key)!r}")
     return ds
 
 
@@ -696,7 +948,7 @@ all_cols = sorted(c for c in _schema_df.columns if c != "shot_id")
 _pair_axis_cols = ["shot_id"] + numeric_cols
 _search_cols = [f for f in (UMAP_FEATURES or numeric_cols) if f in _schema_df.columns]
 
-_table_cols = [c for c in _schema_df.columns if c not in ("umap_x", "umap_y")]
+_table_cols = [c for c in _schema_df.columns if not is_projection_col(c)]
 _CLUSTER_COLOR_VALUE = "__cluster__"
 _OUTLIER_COLOR_VALUE = "__outliers__"
 _color_col_options = (
@@ -827,16 +1079,18 @@ def _effective_window(time_window: dict | None) -> tuple[float, float]:
     )
 
 
-def load_shot_traces(
-    shot_id: int,
+def _trace_overrides(
     signals: list[str] | None = None,
     time_window: dict | None = None,
-) -> pd.DataFrame | None:
-    """Load the traces of one shot.
+    timebase_hz: dict | None = None,
+    backend_options: dict | None = None,
+) -> dict[str, Any]:
+    """Build the per-request BackendConfig overrides from the tab's stores.
 
-    *signals* and *time_window* override the config file for this call only.
-    They come from the Configuration tab. The backend is copied, not changed,
-    so one browser's selection cannot affect another's.
+    Each store holds ``None`` until Apply has run in this browser, so an
+    untouched setting is simply absent and the config file's value applies.
+    ``timebase_hz`` and ``backend_options`` arrive wrapped in a dict, because a
+    cleared value is a real ``None`` that has to be told apart from "not set".
     """
     overrides: dict[str, Any] = {}
     if signals:
@@ -845,7 +1099,46 @@ def load_shot_traces(
         min_time, max_time = _effective_window(time_window)
         overrides["min_time"] = min_time
         overrides["max_time"] = max_time
-    return _trace_backend.with_overrides(**overrides).load(shot_id)
+    if timebase_hz is not None:
+        overrides["timebase_hz"] = timebase_hz.get("value")
+    if backend_options is not None:
+        # Merged over the config file's options, so the tab only has to carry
+        # the keys it changes -- the same rule as --backend-option on the CLI.
+        merged = dict(_backend_options)
+        merged.update(backend_options.get("value") or {})
+        overrides["options"] = merged
+    return overrides
+
+
+def _trace_backend_for(**stores: Any):
+    """The trace backend for one request, with this browser's settings applied.
+
+    Always a copy: the UI lets each browser choose its own settings, and the
+    app serves requests on more than one thread, so the shared backend is never
+    changed in place.
+    """
+    return _trace_backend.with_overrides(**_trace_overrides(**stores))
+
+
+def load_shot_traces(
+    shot_id: int,
+    signals: list[str] | None = None,
+    time_window: dict | None = None,
+    timebase_hz: dict | None = None,
+    backend_options: dict | None = None,
+) -> pd.DataFrame | None:
+    """Load the traces of one shot.
+
+    The settings override the config file for this call only. They come from the
+    Configuration tab. The backend is copied, not changed, so one browser's
+    selection cannot affect another's.
+    """
+    return _trace_backend_for(
+        signals=signals,
+        time_window=time_window,
+        timebase_hz=timebase_hz,
+        backend_options=backend_options,
+    ).load(shot_id)
 
 
 def empty_traces_fig(message: str = "Click a point to load shot traces") -> go.Figure:
@@ -998,6 +1291,8 @@ def _load_cluster_representative_traces(
     representatives: dict,
     signals: list[str] | None = None,
     time_window: dict | None = None,
+    timebase_hz: dict | None = None,
+    backend_options: dict | None = None,
 ) -> dict | None:
     """Load time traces for the real representative shot of each cluster.
     Returns {str(cluster_id): {col: [values]}} suitable for dcc.Store, or None on failure.
@@ -1009,7 +1304,7 @@ def _load_cluster_representative_traces(
     result: dict[str, dict] = {}
     for cid_str, shot_id in sorted(representatives.items(), key=lambda kv: int(kv[0])):
         try:
-            sdf = load_shot_traces(int(shot_id), signals, time_window)
+            sdf = load_shot_traces(int(shot_id), signals, time_window, timebase_hz, backend_options)
         except Exception:
             continue
         if sdf is None or sdf.empty:
@@ -1083,6 +1378,8 @@ def _compute_outlier_traces_data(
     n_samples: int = 5,
     signals: list[str] | None = None,
     time_window: dict | None = None,
+    timebase_hz: dict | None = None,
+    backend_options: dict | None = None,
 ) -> dict | None:
     """Load time traces for up to n_samples outlier shots.
     Returns {str(shot_id): {col: [values]}} or None.
@@ -1096,7 +1393,7 @@ def _compute_outlier_traces_data(
     result: dict[str, dict] = {}
     for sid in outlier_ids[:n_samples]:
         try:
-            sdf = load_shot_traces(sid, signals, time_window)
+            sdf = load_shot_traces(sid, signals, time_window, timebase_hz, backend_options)
             if sdf is None or sdf.empty:
                 continue
             entry: dict[str, list] = {"time": sdf["time"].tolist()}
@@ -1114,6 +1411,8 @@ def _load_shots_traces(
     n_samples: int = 10,
     signals: list[str] | None = None,
     time_window: dict | None = None,
+    timebase_hz: dict | None = None,
+    backend_options: dict | None = None,
 ) -> dict | None:
     """Load time traces for up to n_samples shots from a plain list of shot IDs.
     Returns {str(shot_id): {col: [values]}} or None.
@@ -1124,7 +1423,7 @@ def _load_shots_traces(
     result: dict[str, dict] = {}
     for sid in shot_ids[:n_samples]:
         try:
-            sdf = load_shot_traces(sid, signals, time_window)
+            sdf = load_shot_traces(sid, signals, time_window, timebase_hz, backend_options)
             if sdf is None or sdf.empty:
                 continue
             entry: dict[str, list] = {"time": sdf["time"].tolist()}
@@ -1298,7 +1597,29 @@ _BTN_STYLE = dict(
     fontSize="11px",
     fontWeight="600",
 )
+# Delay before a spinner appears. Long enough that a fast render never flashes
+# one, short enough that a slow one is never mistaken for a broken tab.
+_SPINNER_DELAY = 250
+
+# Style fragments for showing and hiding a block. A feature that can be turned
+# on while the app runs keeps its widgets in the tree and toggles these, so the
+# callbacks that address those widgets always have something to write to.
+_SHOW: dict[str, str] = {}
+_HIDE = {"display": "none"}
+
 _BTN_STYLE_SECONDARY = dict(_BTN_STYLE, backgroundColor="#2a2a4a", color=TEXT)
+
+# The reference-graph toggle in the left panel. Named because the button is now
+# always rendered and a callback has to restore this style when it un-hides it.
+_REF_TOGGLE_STYLE = dict(
+    backgroundColor="#2a2a4a",
+    color="#888",
+    border="1px solid #3a3a6a",
+    padding="4px 12px",
+    cursor="pointer",
+    borderRadius="4px",
+    fontSize="11px",
+)
 
 _CLUSTER_LABEL_STYLE = dict(fontSize="10px", color="#888", display="block", marginBottom="2px")
 _CLUSTER_INPUT_STYLE = dict(
@@ -1321,21 +1642,34 @@ def _cluster_param_block(label: str, control, block_id: str | None = None) -> ht
 
 
 def _config_summary_table() -> html.Table:
-    """Build the read-only table of settings that only a restart can change."""
+    """Build the read-only table of settings that only a restart can change.
+
+    Only settings the tab cannot change belong here. The rows that became
+    editable were removed rather than left in: a second rendering of a value
+    the user has just changed is worse than no rendering at all.
+
+    ``plugins`` is read-only on purpose, not because it is hard. It is a list
+    of Python modules that the app imports, and the app listens on every
+    interface with no authentication, so a module path that a browser could set
+    would be a way to run arbitrary code in the server process.
+    """
     rows = [
         ("config file", _args.config),
-        ("backend", BACKEND),
         ("shot data", SHOT_DATA_PATH),
+        ("backend", BACKEND),
         ("data dir", MASTU_DATA_DIR),
-        ("projection method", PROJECTION_METHOD),
+        ("variable column", VARIABLE_COLUMN),
         ("projection cache", UMAP_CACHE_PATH),
         ("pre-computed projection", PROJECTION_PATH),
         ("SHAP data", SHAP_PATH),
-        ("variable column", VARIABLE_COLUMN),
-        ("reference shot column", REFERENCE_SHOT_COL),
-        ("UDA timebase (Hz)", UDA_TIMEBASE_HZ),
-        ("refresh interval (s)", REFRESH_INTERVAL_SECONDS),
         ("plugins", ", ".join(_cfg.plugins) if _cfg.plugins else None),
+        ("host / port", f"{_args.host}:{_args.port}"),
+        ("workers", 1 if _args.debug else _args.workers),
+        ("debug", "on" if _args.debug else "off"),
+        # Which worker answered this page. With more than one worker, the most
+        # confusing thing that can happen is two tabs disagreeing, and this row
+        # makes that visible instead of mysterious.
+        ("process id", os.getpid()),
     ]
     return html.Table(
         style=dict(width="100%", maxWidth="720px", borderCollapse="collapse", fontSize="11px"),
@@ -1371,8 +1705,104 @@ def _config_summary_table() -> html.Table:
     )
 
 
-def _config_section(title: str, description: str, children: list) -> html.Div:
-    """Wrap one block of the Configuration tab in a titled panel."""
+# ---------------------------------------------------------------------------
+# Configuration tab — one builder per section.
+#
+# Built as separate functions rather than inlined, because the layout literal
+# below is already deeply nested and ten more sections in it would be unreadable.
+#
+# Each section carries a scope badge. Two scopes exist, and the difference
+# matters: "applies now" settings are read per request, so a change redraws the
+# affected pane immediately, while "rebuilds the projection" settings change the
+# dataset cache key, so a change recomputes the embedding. Both are per-browser.
+# ---------------------------------------------------------------------------
+
+_CONFIG_TEXT_STYLE = dict(_CLUSTER_INPUT_STYLE, width="100%")
+_CONFIG_WIDE_INPUT = dict(_CLUSTER_INPUT_STYLE, width="120px")
+
+# Free-form backend option rows. A fixed count, like the filter grid, so the
+# ids exist in the layout from the start and no callback has to create them.
+MAX_BACKEND_OPTIONS = 8
+
+# Built-in trace backends that read nothing from backend_options, so the
+# key/value grid would be dead UI for them. Checked against this list rather
+# than against the documented option names, because a plugin backend can read
+# anything and must keep the grid.
+_BACKENDS_WITHOUT_OPTIONS = frozenset({"parquet", "uda", "sal"})
+
+# Backends that resample onto a uniform time grid, i.e. the ones that read
+# BackendConfig.timebase_hz. An unknown (plugin) backend keeps the control for
+# the same reason it keeps the grid.
+_BACKENDS_WITH_TIMEBASE = frozenset({"uda", "sal", "fairmast"})
+
+
+# Every backend the app ships. A name that is not here came from a plugin, and
+# a plugin can read anything, so it keeps every control.
+_BUILT_IN_BACKENDS = frozenset({"parquet", "uda", "sal", "postgres", "fairmast"})
+
+
+def _backend_reads_options(backend: str) -> bool:
+    return backend not in _BACKENDS_WITHOUT_OPTIONS
+
+
+def _backend_reads_timebase(backend: str) -> bool:
+    return backend in _BACKENDS_WITH_TIMEBASE or backend not in _BUILT_IN_BACKENDS
+
+
+# How many option rows to render. Zero removes the grid: these are
+# pattern-matching ids, so a callback that reads them with ALL simply gets an
+# empty list, which is why they can be left out when a plain string id could
+# not be.
+_BACKEND_OPTION_ROWS = MAX_BACKEND_OPTIONS if _backend_reads_options(BACKEND) else 0
+
+# Cap on the names rendered into a column dropdown. A latent-space table can
+# hold hundreds of columns, and a select box that long is slow to open and no
+# use to read. The same cap the Lineage variable control uses; the paste box in
+# the features section is how you give a long list.
+_CFG_OPTION_LIMIT = 200
+
+# Columns offered as projection inputs. The coordinate columns are numeric and
+# sit in the same table, but choosing one as a feature would feed the embedding
+# back into itself, so they are never offered.
+_cfg_feature_pool = [c for c in numeric_cols if not is_projection_col(c)]
+
+_SCOPE_NOW = "applies now"
+_SCOPE_PROJECTION = "rebuilds the projection"
+
+
+def _scope_badge(text: str) -> html.Span:
+    """A small label saying when a section's settings take effect."""
+    return html.Span(
+        text,
+        style=dict(
+            fontSize="9px",
+            color="#7a7a9a",
+            border="1px solid #2a2a4a",
+            borderRadius="3px",
+            padding="1px 5px",
+            marginLeft="8px",
+            textTransform="uppercase",
+            letterSpacing="0.5px",
+            whiteSpace="nowrap",
+        ),
+    )
+
+
+def _config_section(
+    title: str,
+    description: str,
+    children: list,
+    scope: str | None = None,
+    hidden: bool = False,
+) -> html.Div:
+    """Wrap one block of the Configuration tab in a titled panel.
+
+    Set *hidden* for a panel that holds nothing the user can act on. Its
+    children stay in the tree, because callbacks address them by name.
+    """
+    heading: list = [title]
+    if scope:
+        heading.append(_scope_badge(scope))
     return html.Div(
         style=dict(
             border=BORDER,
@@ -1380,13 +1810,523 @@ def _config_section(title: str, description: str, children: list) -> html.Div:
             padding="12px 14px",
             marginBottom="14px",
             backgroundColor=PANEL_BG,
+            **(_HIDE if hidden else _SHOW),
         ),
         children=[
-            html.Div(title, style=dict(fontSize="13px", fontWeight="600", color=ACCENT, marginBottom="2px")),
+            html.Div(
+                heading,
+                style=dict(
+                    fontSize="13px",
+                    fontWeight="600",
+                    color=ACCENT,
+                    marginBottom="2px",
+                    display="flex",
+                    alignItems="center",
+                ),
+            ),
             html.Div(description, style=dict(fontSize="11px", color="#888", marginBottom="10px")),
             *children,
         ],
     )
+
+
+def _cfg_row(children: list) -> html.Div:
+    """A row of labelled controls that wraps on a narrow window."""
+    return html.Div(
+        style=dict(display="flex", alignItems="flex-end", gap="16px", flexWrap="wrap"),
+        children=children,
+    )
+
+
+def _cfg_signals_section() -> html.Div:
+    return _config_section(
+        "Signals",
+        "Select the signals to show in the time-trace pane. Type a name to add one that is not in the list.",
+        [
+            dcc.Dropdown(
+                id="cfg-signal-select",
+                options=[{"label": s, "value": s} for s in TIME_TRACE_SIGNALS],
+                value=list(TIME_TRACE_SIGNALS),
+                multi=True,
+                placeholder="Select or type signal names\u2026",
+                style=dict(DROPDOWN_STYLE, width="100%"),
+            ),
+            html.Div(
+                style=dict(display="flex", alignItems="center", gap="10px", marginTop="10px"),
+                children=[
+                    html.Button(
+                        "Discover signals",
+                        id="cfg-discover-btn",
+                        n_clicks=0,
+                        style=_BTN_STYLE_SECONDARY,
+                    ),
+                    html.Span(id="cfg-discover-status", style=dict(fontSize="11px", color="#888")),
+                ],
+            ),
+        ],
+        scope=_SCOPE_NOW,
+    )
+
+
+def _cfg_time_window_section() -> html.Div:
+    # The two inputs use no debounce: Apply reads them as State, and a
+    # blur-on-click could otherwise lose the last edit.
+    return _config_section(
+        "Time window",
+        "Crop the time traces to this range, in seconds.",
+        [
+            _cfg_row(
+                [
+                    _cluster_param_block(
+                        "min_time (s)",
+                        dcc.Input(id="cfg-min-time", type="number", value=MIN_TIME, style=_CLUSTER_INPUT_STYLE),
+                    ),
+                    _cluster_param_block(
+                        "max_time (s)",
+                        dcc.Input(id="cfg-max-time", type="number", value=MAX_TIME, style=_CLUSTER_INPUT_STYLE),
+                    ),
+                ]
+            )
+        ],
+        scope=_SCOPE_NOW,
+    )
+
+
+def _cfg_backend_section() -> html.Div:
+    """The settings the active trace backend actually reads.
+
+    A backend that reads no options gets no key/value grid, and a backend that
+    does no resampling gets no timebase control. The timebase input stays in
+    the tree either way, hidden, because callbacks address it by name and Dash
+    fails on an output or state that is not rendered. The option rows use
+    pattern-matching ids, which may legitimately match nothing, so those are
+    left out rather than hidden.
+    """
+    show_timebase = _backend_reads_timebase(BACKEND)
+    return _config_section(
+        f"Trace backend options ({BACKEND})",
+        "Extra settings passed to the backend that loads the time traces. "
+        "The backend itself, and the data directory, need a restart to change.",
+        [
+            html.Div(
+                id="cfg-uda-block",
+                style=dict(_SHOW if show_timebase else _HIDE),
+                children=[
+                    _cfg_row(
+                        [
+                            _cluster_param_block(
+                                "timebase_hz",
+                                dcc.Input(
+                                    id="cfg-timebase-hz-input",
+                                    type="number",
+                                    value=UDA_TIMEBASE_HZ,
+                                    placeholder="native",
+                                    style=_CONFIG_WIDE_INPUT,
+                                ),
+                            )
+                        ]
+                    ),
+                    html.Div(
+                        "Resample every signal onto one time grid at this rate. Clear it to use the native time axis.",
+                        style=dict(fontSize="10px", color="#666", marginTop="6px"),
+                    ),
+                ],
+            ),
+            html.Div(
+                id="cfg-backend-option-hint",
+                style=dict(fontSize="10px", color="#666", margin="10px 0 6px"),
+            ),
+            *[
+                html.Div(
+                    style=dict(display="flex", alignItems="center", gap="6px", marginBottom="6px"),
+                    children=[
+                        dcc.Input(
+                            id={"type": "cfg-opt-key", "index": i},
+                            type="text",
+                            placeholder="option\u2026",
+                            value="",
+                            debounce=False,
+                            style=dict(_CLUSTER_INPUT_STYLE, width="150px"),
+                        ),
+                        dcc.Input(
+                            id={"type": "cfg-opt-val", "index": i},
+                            type="text",
+                            placeholder="value\u2026",
+                            value="",
+                            debounce=False,
+                            style=dict(_CLUSTER_INPUT_STYLE, width="220px"),
+                        ),
+                    ],
+                )
+                for i in range(_BACKEND_OPTION_ROWS)
+            ],
+        ],
+        scope=_SCOPE_NOW,
+        hidden=not (show_timebase or _BACKEND_OPTION_ROWS),
+    )
+
+
+def _cfg_live_update_section() -> html.Div:
+    return _config_section(
+        "Live updates",
+        "Check the backend for new shots at this interval, in seconds. Clear it to stop checking.",
+        [
+            _cfg_row(
+                [
+                    _cluster_param_block(
+                        "refresh_interval_seconds",
+                        dcc.Input(
+                            id="cfg-refresh-interval",
+                            type="number",
+                            min=1,
+                            value=REFRESH_INTERVAL_SECONDS,
+                            placeholder="off",
+                            style=_CONFIG_WIDE_INPUT,
+                        ),
+                    )
+                ]
+            )
+        ],
+        scope=_SCOPE_NOW,
+    )
+
+
+def _cfg_projection_section() -> html.Div:
+    return _config_section(
+        "Projection",
+        "How the shot statistics are reduced to a 2-D map. A change here recomputes the embedding.",
+        [
+            _cfg_row(
+                [
+                    _cluster_param_block(
+                        "method",
+                        dcc.RadioItems(
+                            id="cfg-projection-method",
+                            options=[
+                                {"label": " UMAP", "value": "umap"},
+                                {"label": " PCA", "value": "pca"},
+                            ],
+                            value=PROJECTION_METHOD,
+                            inline=True,
+                            style=dict(fontSize="11px"),
+                        ),
+                    ),
+                    _cluster_param_block(
+                        "n_components",
+                        dcc.Input(
+                            id="cfg-n-components",
+                            type="number",
+                            min=2,
+                            max=50,
+                            step=1,
+                            value=PROJECTION_OPTIONS.n_components,
+                            style=_CLUSTER_INPUT_STYLE,
+                        ),
+                    ),
+                    _cluster_param_block(
+                        "random_state",
+                        dcc.Input(
+                            id="cfg-random-state",
+                            type="number",
+                            step=1,
+                            value=PROJECTION_OPTIONS.random_state,
+                            placeholder="none",
+                            style=_CLUSTER_INPUT_STYLE,
+                        ),
+                    ),
+                ]
+            ),
+            html.Div(
+                "The plots draw the first two components. Components 3 and up become extra columns "
+                "(umap_3, umap_4 \u2026) that you can choose as plot axes. Clear random_state for an "
+                "unseeded, faster UMAP that does not repeat exactly.",
+                style=dict(fontSize="10px", color="#666", marginTop="8px"),
+            ),
+            html.Div(
+                id="cfg-umap-block",
+                style=dict(marginTop="10px"),
+                children=[
+                    _cfg_row(
+                        [
+                            _cluster_param_block(
+                                "n_neighbors",
+                                dcc.Input(
+                                    id="cfg-n-neighbors",
+                                    type="number",
+                                    min=2,
+                                    step=1,
+                                    value=PROJECTION_OPTIONS.n_neighbors,
+                                    style=_CLUSTER_INPUT_STYLE,
+                                ),
+                            ),
+                            _cluster_param_block(
+                                "min_dist",
+                                dcc.Input(
+                                    id="cfg-min-dist",
+                                    type="number",
+                                    min=0,
+                                    max=0.99,
+                                    step=0.05,
+                                    value=PROJECTION_OPTIONS.min_dist,
+                                    style=_CLUSTER_INPUT_STYLE,
+                                ),
+                            ),
+                            _cluster_param_block(
+                                "metric",
+                                dcc.Dropdown(
+                                    id="cfg-metric",
+                                    options=[{"label": m, "value": m} for m in get_args(ProjectionMetric)],
+                                    value=PROJECTION_OPTIONS.metric,
+                                    clearable=False,
+                                    style=dict(DROPDOWN_STYLE, width="160px"),
+                                ),
+                            ),
+                        ]
+                    ),
+                    html.Div(
+                        "These three apply to UMAP only. PCA ignores them, and they are kept so that "
+                        "a change back to UMAP uses them again.",
+                        style=dict(fontSize="10px", color="#666", marginTop="6px"),
+                    ),
+                ],
+            ),
+        ],
+        scope=_SCOPE_PROJECTION,
+    )
+
+
+def _cfg_features_section() -> html.Div:
+    return _config_section(
+        "Projection features",
+        "The columns used as input to the projection.",
+        [
+            html.Label("umap_features", style=_CLUSTER_LABEL_STYLE),
+            dcc.Dropdown(
+                id="cfg-umap-features",
+                options=[{"label": c, "value": c} for c in _cfg_feature_pool[:_CFG_OPTION_LIMIT]],
+                value=list(UMAP_FEATURES) if UMAP_FEATURES else [],
+                multi=True,
+                placeholder="Empty = every numeric column",
+                style=dict(DROPDOWN_STYLE, width="100%"),
+            ),
+            html.Label("umap_exclude_features", style=dict(_CLUSTER_LABEL_STYLE, marginTop="10px")),
+            dcc.Dropdown(
+                id="cfg-umap-exclude-features",
+                options=[{"label": c, "value": c} for c in _cfg_feature_pool[:_CFG_OPTION_LIMIT]],
+                value=list(UMAP_EXCLUDE_FEATURES),
+                multi=True,
+                placeholder="Nothing excluded",
+                style=dict(DROPDOWN_STYLE, width="100%"),
+            ),
+            html.Div(
+                "Exclusions apply after the feature list, so they are the short way to keep one bad "
+                "column out of a long list. A shot with no value in a listed column is still projected: "
+                "the column mean is used.",
+                style=dict(fontSize="10px", color="#666", marginTop="8px"),
+            ),
+            html.Label(
+                "Paste a feature list",
+                style=dict(_CLUSTER_LABEL_STYLE, marginTop="10px"),
+            ),
+            dcc.Textarea(
+                id="cfg-features-paste",
+                placeholder="One name per line, or separated by commas. Use this for a long list.",
+                style=dict(
+                    width="100%",
+                    height="54px",
+                    backgroundColor="#16213e",
+                    color=TEXT,
+                    border=BORDER,
+                    borderRadius="4px",
+                    fontSize="11px",
+                    padding="4px 6px",
+                ),
+            ),
+            html.Div(
+                style=dict(display="flex", alignItems="center", gap="10px", marginTop="6px"),
+                children=[
+                    html.Button(
+                        "Use pasted list",
+                        id="cfg-features-paste-btn",
+                        n_clicks=0,
+                        style=_BTN_STYLE_SECONDARY,
+                    ),
+                    html.Span(id="cfg-features-paste-status", style=dict(fontSize="10px", color="#888")),
+                ],
+            ),
+        ],
+        scope=_SCOPE_PROJECTION,
+    )
+
+
+def _cfg_columns_section() -> html.Div:
+    return _config_section(
+        "Table columns",
+        "Columns that the app reads for a particular purpose.",
+        [
+            html.Label("reference_shot_col", style=_CLUSTER_LABEL_STYLE),
+            dcc.Dropdown(
+                id="cfg-reference-shot-col-select",
+                options=[{"label": c, "value": c} for c in all_cols[:_CFG_OPTION_LIMIT]],
+                value=REFERENCE_SHOT_COL,
+                clearable=True,
+                placeholder="None \u2014 the Lineage tab stays off",
+                style=dict(DROPDOWN_STYLE, width="100%"),
+            ),
+            html.Div(
+                "The column that holds the reference (parent) shot of each shot. Set it to use the "
+                "Lineage tab and the reference-graph toggle. Clear it to turn both off.",
+                style=dict(fontSize="10px", color="#666", marginTop="8px"),
+            ),
+        ],
+        scope=_SCOPE_PROJECTION,
+    )
+
+
+def _cfg_actions_row() -> html.Div:
+    return html.Div(
+        style=dict(display="flex", alignItems="center", gap="10px", marginBottom="16px", flexWrap="wrap"),
+        children=[
+            html.Button("Apply", id="cfg-apply-btn", n_clicks=0, style=_BTN_STYLE),
+            html.Button(
+                "Reset to config file",
+                id="cfg-reset-btn",
+                n_clicks=0,
+                style=_BTN_STYLE_SECONDARY,
+            ),
+            html.Button(
+                "Copy as YAML",
+                id="cfg-yaml-btn",
+                n_clicks=0,
+                style=_BTN_STYLE_SECONDARY,
+            ),
+            html.Span(id="cfg-status", style=dict(fontSize="11px", color="#888")),
+        ],
+    )
+
+
+def _cfg_yaml_block() -> html.Div:
+    return html.Div(
+        id="cfg-yaml-block",
+        style=dict(_HIDE),
+        children=[
+            _config_section(
+                "Your settings as a config file",
+                "The app never writes your config file. Copy this into it, or pass it with --config, "
+                "to make these settings the default at every start.",
+                [
+                    dcc.Textarea(
+                        id="cfg-yaml-output",
+                        readOnly=True,
+                        style=dict(
+                            width="100%",
+                            height="240px",
+                            backgroundColor="#16213e",
+                            color=TEXT,
+                            border=BORDER,
+                            borderRadius="4px",
+                            fontSize="11px",
+                            fontFamily="monospace",
+                            padding="6px",
+                        ),
+                    )
+                ],
+            )
+        ],
+    )
+
+
+# The interval a parked dcc.Interval keeps. It never fires while disabled, so
+# the value only has to be large enough not to matter.
+_REFRESH_INTERVAL_OFF_MS = 3_600_000
+
+
+def _cfg_column_options(pool: list[str], selected, search_value: str | None) -> list[dict[str, str]]:
+    """Options for a column dropdown, always including what is already selected.
+
+    Dash clears a value that has no matching option, and the rendered list is
+    capped, so a name that came from a paste or from the config file has to be
+    added back or it would disappear on the next render.
+    """
+    chosen = [c for c in (selected or []) if c]
+    names = list(dict.fromkeys([*chosen, *pool]))
+    if search_value:
+        matches = [c for c in names if search_value.lower() in c.lower()]
+        names = list(dict.fromkeys([*chosen, *matches]))
+    return [{"label": c, "value": c} for c in names[:_CFG_OPTION_LIMIT]]
+
+
+def _settings_as_yaml(signals, time_window, timebase, options, projection, reference) -> str:
+    """The applied settings as a config file, plus the equivalent CLI flags.
+
+    Anything the user has not applied is left out, so the result describes the
+    settings rather than freezing today's defaults into a file.
+    """
+    body: dict[str, Any] = {}
+    if signals:
+        body["signals"] = list(signals)
+    if time_window:
+        body["time_window"] = {
+            "min_time": time_window.get("min_time"),
+            "max_time": time_window.get("max_time"),
+        }
+    if timebase is not None and timebase.get("value") is not None:
+        body["uda"] = {"timebase_hz": timebase["value"]}
+    if options is not None and options.get("value"):
+        body["backend_options"] = dict(options["value"])
+    if projection:
+        body["projection_method"] = projection.get("projection_method")
+        if projection.get("umap_features"):
+            body["umap_features"] = list(projection["umap_features"])
+        if projection.get("umap_exclude_features"):
+            body["umap_exclude_features"] = list(projection["umap_exclude_features"])
+        if projection.get("projection_options"):
+            body["projection_options"] = dict(projection["projection_options"])
+    if reference is not None:
+        body["reference_shot_col"] = reference.get("value")
+
+    if not body:
+        return "# Nothing applied yet in this browser. Change a setting, then select Apply."
+
+    header = (
+        "# NiceShot settings from the Configuration tab.\n"
+        "# Copy these into your config file, or save them and pass --config <path>,\n"
+        "# to get them at every start. The app never writes your config file.\n"
+        f"# Shot data: {SHOT_DATA_PATH}\n"
+        f"# Backend:   {BACKEND}\n"
+    )
+    return header + "\n" + yaml.safe_dump(body, sort_keys=False, default_flow_style=False)
+
+
+def _cfg_tab_children() -> list:
+    """The whole Configuration tab body."""
+    return [
+        html.Div(
+            style=dict(padding="12px 4px", overflow="auto"),
+            children=[
+                html.Div(
+                    "These settings apply to this browser only. The server keeps no per-user "
+                    "configuration, so another browser is unaffected, and a restart returns to the "
+                    "config file.",
+                    style=dict(fontSize="11px", color="#888", marginBottom="14px"),
+                ),
+                _cfg_signals_section(),
+                _cfg_time_window_section(),
+                _cfg_backend_section(),
+                _cfg_live_update_section(),
+                _cfg_projection_section(),
+                _cfg_features_section(),
+                _cfg_columns_section(),
+                _cfg_actions_row(),
+                _cfg_yaml_block(),
+                _config_section(
+                    "Active configuration",
+                    "These settings come from the config file and the command line. Restart the app to change them.",
+                    [_config_summary_table()],
+                ),
+            ],
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1942,9 +2882,6 @@ _LIN_SUBTAB_SELECTED = dict(
     padding="4px 10px",
 )
 _LIN_VIEW_H = "calc(100vh - 430px)"
-# Long enough that a fast render never flashes a spinner, short enough that a
-# slow one is never mistaken for a broken tab.
-_LIN_SPINNER_DELAY = 250
 
 
 def _lin_subtab(label: str, value: str, children: list, controls: list | None = None) -> dcc.Tab:
@@ -1963,7 +2900,7 @@ def _lin_subtab(label: str, value: str, children: list, controls: list | None = 
         children=children,
         type="circle",
         color=ACCENT,
-        delay_show=_LIN_SPINNER_DELAY,
+        delay_show=_SPINNER_DELAY,
         overlay_style=dict(visibility="visible", opacity=0.35),
     )
     return dcc.Tab(
@@ -2303,12 +3240,17 @@ app.layout = html.Div(
         # Selected variable in long-format mode; always None in flat mode, where
         # get_dataset(None) returns the single dataset.
         dcc.Store(id="selected-variable", data=None),
+        # Everything a cached Dataset is built from, as one value. Data
+        # callbacks depend on this rather than on the individual settings, so a
+        # change fans out once, atomically, instead of firing each callback
+        # several times with a half-updated combination of settings.
+        dcc.Store(id="dataset-key", data=None),
         dcc.Download(id="table-download"),
         # Live-update: poll the backend for new shots at REFRESH_INTERVAL_SECONDS.
         # Disabled (no-op) when unset — see nice_shot/config_schema.py.
         dcc.Interval(
             id="refresh-interval",
-            interval=int((REFRESH_INTERVAL_SECONDS or 3600) * 1000),
+            interval=int(REFRESH_INTERVAL_SECONDS * 1000) if REFRESH_INTERVAL_SECONDS else _REFRESH_INTERVAL_OFF_MS,
             disabled=REFRESH_INTERVAL_SECONDS is None,
         ),
         # Bumped by poll_for_updates() after a successful refresh_dataset() call;
@@ -2331,6 +3273,18 @@ app.layout = html.Div(
             data={"min_time": MIN_TIME, "max_time": MAX_TIME},
             storage_type="session",
         ),
+        # Projection settings from the Configuration tab. A dict once Apply has
+        # run, and None before that.
+        #
+        # None means "nothing applied in this browser", not "empty": a cleared
+        # setting is still a dict, with the field set to null. Without that
+        # distinction, clearing the reference column would be read as "fall
+        # back to the config file" and the column would come straight back.
+        dcc.Store(id="cfg-projection", data=None, storage_type="session"),
+        dcc.Store(id="cfg-reference-shot-col", data=None, storage_type="session"),
+        # UDA timebase and the free-form backend options, same convention.
+        dcc.Store(id="cfg-timebase-hz", data=None, storage_type="session"),
+        dcc.Store(id="cfg-backend-options", data=None, storage_type="session"),
         # Signals found on the backend by the "Discover signals" button.
         dcc.Store(id="cfg-discovered-signals", data=None),
         # Header
@@ -2432,25 +3386,21 @@ app.layout = html.Div(
                         html.Div(
                             style=dict(display="flex", gap="8px", flexWrap="wrap"),
                             children=[
-                                *(
-                                    [
-                                        html.Button(
-                                            "Reference graph: OFF",
-                                            id="ref-toggle-btn",
-                                            n_clicks=0,
-                                            style=dict(
-                                                backgroundColor="#2a2a4a",
-                                                color="#888",
-                                                border="1px solid #3a3a6a",
-                                                padding="4px 12px",
-                                                cursor="pointer",
-                                                borderRadius="4px",
-                                                fontSize="11px",
-                                            ),
-                                        )
-                                    ]
-                                    if SHOW_REF_TOGGLE
-                                    else []
+                                # Always in the tree, hidden when there is no
+                                # reference column. Its callbacks are registered
+                                # once at import and cannot be added later, so
+                                # removing the button would leave them pointing
+                                # at an id that does not exist -- and the
+                                # Configuration tab can turn this feature on
+                                # while the app runs.
+                                html.Button(
+                                    "Reference graph: OFF",
+                                    id="ref-toggle-btn",
+                                    n_clicks=0,
+                                    style=dict(
+                                        _REF_TOGGLE_STYLE,
+                                        **({} if SHOW_REF_TOGGLE else _HIDE),
+                                    ),
                                 ),
                                 html.Button(
                                     "Similar shots: ON",
@@ -3315,10 +4265,22 @@ app.layout = html.Div(
                                                 ),
                                             ],
                                         ),
-                                        dcc.Graph(
-                                            id="umap-plot",
-                                            config=dict(displayModeBar=True, displaylogo=False),
-                                            style=dict(height=_SCATTER_H),
+                                        # Changing a projection setting refits the
+                                        # embedding, which takes long enough to
+                                        # look like the app has stopped. The
+                                        # spinner covers the plot until the new
+                                        # figure arrives.
+                                        dcc.Loading(
+                                            type="circle",
+                                            color=ACCENT,
+                                            delay_show=_SPINNER_DELAY,
+                                            target_components={"umap-plot": "figure"},  # type: ignore
+                                            overlay_style=dict(visibility="visible", opacity=0.35),
+                                            children=dcc.Graph(
+                                                id="umap-plot",
+                                                config=dict(displayModeBar=True, displaylogo=False),
+                                                style=dict(height=_SCATTER_H),
+                                            ),
                                         ),
                                     ],
                                 ),
@@ -3841,23 +4803,27 @@ app.layout = html.Div(
                                         ),
                                     ],
                                 ),
-                                # -- Lineage tab (requires reference_shot_col) --
-                                *(
-                                    [
-                                        dcc.Tab(
-                                            label="Lineage",
-                                            value="lineage",
-                                            style=dict(color=TEXT, backgroundColor=PANEL_BG),
-                                            selected_style=dict(
-                                                color=ACCENT,
-                                                backgroundColor=DARK_BG,
-                                                borderTop=f"2px solid {ACCENT}",
-                                            ),
-                                            children=_lineage_tab_children(),
-                                        )
-                                    ]
-                                    if SHOW_REF_TOGGLE
-                                    else []
+                                # -- Lineage tab (needs a reference column) --
+                                #
+                                # Always in the tree and disabled when there is
+                                # no reference column, the same treatment the
+                                # Time Traces tab gets. Leaving it out would
+                                # break its callbacks, which are registered at
+                                # import and cannot be added afterwards, and the
+                                # Configuration tab can set the column while the
+                                # app runs.
+                                dcc.Tab(
+                                    label="Lineage",
+                                    value="lineage",
+                                    id="lineage-tab",
+                                    disabled=not SHOW_REF_TOGGLE,
+                                    style=dict(color=TEXT, backgroundColor=PANEL_BG),
+                                    selected_style=dict(
+                                        color=ACCENT,
+                                        backgroundColor=DARK_BG,
+                                        borderTop=f"2px solid {ACCENT}",
+                                    ),
+                                    children=_lineage_tab_children(),
                                 ),
                                 # -- Configuration tab --
                                 dcc.Tab(
@@ -3869,117 +4835,7 @@ app.layout = html.Div(
                                         backgroundColor=DARK_BG,
                                         borderTop=f"2px solid {ACCENT}",
                                     ),
-                                    children=[
-                                        html.Div(
-                                            style=dict(padding="12px 4px", overflow="auto"),
-                                            children=[
-                                                _config_section(
-                                                    "Signals",
-                                                    "Select the signals to show in the time-trace pane. "
-                                                    "Type a name to add one that is not in the list.",
-                                                    [
-                                                        dcc.Dropdown(
-                                                            id="cfg-signal-select",
-                                                            options=[
-                                                                {"label": s, "value": s} for s in TIME_TRACE_SIGNALS
-                                                            ],
-                                                            value=list(TIME_TRACE_SIGNALS),
-                                                            multi=True,
-                                                            placeholder="Select or type signal names…",
-                                                            style=dict(DROPDOWN_STYLE, width="100%"),
-                                                        ),
-                                                        html.Div(
-                                                            style=dict(
-                                                                display="flex",
-                                                                alignItems="center",
-                                                                gap="10px",
-                                                                marginTop="10px",
-                                                            ),
-                                                            children=[
-                                                                html.Button(
-                                                                    "Discover signals",
-                                                                    id="cfg-discover-btn",
-                                                                    n_clicks=0,
-                                                                    style=_BTN_STYLE_SECONDARY,
-                                                                ),
-                                                                html.Span(
-                                                                    id="cfg-discover-status",
-                                                                    style=dict(fontSize="11px", color="#888"),
-                                                                ),
-                                                            ],
-                                                        ),
-                                                    ],
-                                                ),
-                                                # The two inputs below use no debounce: Apply reads
-                                                # them as State, and a blur-on-click could otherwise
-                                                # lose the last edit.
-                                                _config_section(
-                                                    "Time window",
-                                                    "Crop the time traces to this range, in seconds.",
-                                                    [
-                                                        html.Div(
-                                                            style=dict(
-                                                                display="flex", alignItems="flex-end", gap="16px"
-                                                            ),
-                                                            children=[
-                                                                _cluster_param_block(
-                                                                    "min_time (s)",
-                                                                    dcc.Input(
-                                                                        id="cfg-min-time",
-                                                                        type="number",
-                                                                        value=MIN_TIME,
-                                                                        style=_CLUSTER_INPUT_STYLE,
-                                                                    ),
-                                                                ),
-                                                                _cluster_param_block(
-                                                                    "max_time (s)",
-                                                                    dcc.Input(
-                                                                        id="cfg-max-time",
-                                                                        type="number",
-                                                                        value=MAX_TIME,
-                                                                        style=_CLUSTER_INPUT_STYLE,
-                                                                    ),
-                                                                ),
-                                                            ],
-                                                        ),
-                                                    ],
-                                                ),
-                                                html.Div(
-                                                    style=dict(
-                                                        display="flex",
-                                                        alignItems="center",
-                                                        gap="10px",
-                                                        marginBottom="16px",
-                                                        flexWrap="wrap",
-                                                    ),
-                                                    children=[
-                                                        html.Button(
-                                                            "Apply",
-                                                            id="cfg-apply-btn",
-                                                            n_clicks=0,
-                                                            style=_BTN_STYLE,
-                                                        ),
-                                                        html.Button(
-                                                            "Reset to config file",
-                                                            id="cfg-reset-btn",
-                                                            n_clicks=0,
-                                                            style=_BTN_STYLE_SECONDARY,
-                                                        ),
-                                                        html.Span(
-                                                            id="cfg-status",
-                                                            style=dict(fontSize="11px", color="#888"),
-                                                        ),
-                                                    ],
-                                                ),
-                                                _config_section(
-                                                    "Active configuration",
-                                                    "These settings come from the config file and the command line. "
-                                                    "Restart the app to change them.",
-                                                    [_config_summary_table()],
-                                                ),
-                                            ],
-                                        ),
-                                    ],
+                                    children=_cfg_tab_children(),
                                 ),
                             ],
                         ),
@@ -4109,6 +4965,9 @@ _SCATTER_LAYOUT = dict(
 
 
 SELECT_VARIABLE_MSG = "Select a variable to load data"
+_LIN_NO_REFERENCE_MSG = (
+    "No reference shot column is set. Choose one under Table columns in the Configuration tab to use this tab."
+)
 
 
 def _empty_fig(message: str) -> go.Figure:
@@ -4295,7 +5154,7 @@ def _lin_spark_fig(matrix, columns: list[str], subject: int) -> go.Figure:
     Input({"type": "filter-op", "index": ALL}, "value"),
     Input({"type": "filter-val", "index": ALL}, "value"),
     Input("filter-logic", "value"),
-    Input("selected-variable", "data"),
+    Input("dataset-key", "data"),
     Input("dataset-version", "data"),
 )
 def apply_filters(cols, ops, vals, logic, variable, _dataset_version):
@@ -4308,7 +5167,7 @@ def apply_filters(cols, ops, vals, logic, variable, _dataset_version):
 @app.callback(
     Output("filter-count-display", "children"),
     Input("active-filters", "data"),
-    Input("selected-variable", "data"),
+    Input("dataset-key", "data"),
     Input("dataset-version", "data"),
 )
 def update_filter_count(active_filters, variable, _dataset_version):
@@ -4320,7 +5179,7 @@ def update_filter_count(active_filters, variable, _dataset_version):
 
 @app.callback(
     Output("shot-count-display", "children"),
-    Input("selected-variable", "data"),
+    Input("dataset-key", "data"),
     Input("dataset-version", "data"),
 )
 def update_shot_count(variable, _dataset_version):
@@ -4348,44 +5207,42 @@ def clear_filters(_, _row_clicks):
     return dash.no_update, dash.no_update
 
 
-if SHOW_REF_TOGGLE:
-
-    @app.callback(
-        Output("ref-graph-enabled", "data"),
-        Output("ref-toggle-btn", "children"),
-        Output("ref-toggle-btn", "style"),
-        Input("ref-toggle-btn", "n_clicks"),
-        State("ref-graph-enabled", "data"),
-        prevent_initial_call=True,
-    )
-    def toggle_ref_graph(n_clicks, currently_enabled):
-        enabled = not currently_enabled
-        if enabled:
-            label = "Reference graph: ON"
-            style = dict(
-                alignSelf="flex-start",
-                backgroundColor="#1a3a6a",
-                color=ACCENT,
-                border=f"1px solid {ACCENT}",
-                padding="4px 12px",
-                cursor="pointer",
-                borderRadius="4px",
-                fontSize="11px",
-                fontWeight="600",
-            )
-        else:
-            label = "Reference graph: OFF"
-            style = dict(
-                alignSelf="flex-start",
-                backgroundColor="#2a2a4a",
-                color="#888",
-                border="1px solid #3a3a6a",
-                padding="4px 12px",
-                cursor="pointer",
-                borderRadius="4px",
-                fontSize="11px",
-            )
-        return enabled, label, style
+@app.callback(
+    Output("ref-graph-enabled", "data"),
+    Output("ref-toggle-btn", "children"),
+    Output("ref-toggle-btn", "style"),
+    Input("ref-toggle-btn", "n_clicks"),
+    State("ref-graph-enabled", "data"),
+    prevent_initial_call=True,
+)
+def toggle_ref_graph(n_clicks, currently_enabled):
+    enabled = not currently_enabled
+    if enabled:
+        label = "Reference graph: ON"
+        style = dict(
+            alignSelf="flex-start",
+            backgroundColor="#1a3a6a",
+            color=ACCENT,
+            border=f"1px solid {ACCENT}",
+            padding="4px 12px",
+            cursor="pointer",
+            borderRadius="4px",
+            fontSize="11px",
+            fontWeight="600",
+        )
+    else:
+        label = "Reference graph: OFF"
+        style = dict(
+            alignSelf="flex-start",
+            backgroundColor="#2a2a4a",
+            color="#888",
+            border="1px solid #3a3a6a",
+            padding="4px 12px",
+            cursor="pointer",
+            borderRadius="4px",
+            fontSize="11px",
+        )
+    return enabled, label, style
 
 
 @app.callback(
@@ -4463,7 +5320,7 @@ def toggle_latest_shot_highlight(n_clicks, currently_enabled):
 @app.callback(
     Output("dataset-version", "data"),
     Input("refresh-interval", "n_intervals"),
-    State("selected-variable", "data"),
+    State("dataset-key", "data"),
     State("dataset-version", "data"),
     prevent_initial_call=True,
 )
@@ -4478,7 +5335,7 @@ def poll_for_updates(n_intervals, variable, version):
 @app.callback(
     Output("latest-shot", "data"),
     Input("dataset-version", "data"),
-    Input("selected-variable", "data"),
+    Input("dataset-key", "data"),
 )
 def update_latest_shot(_dataset_version, variable):
     """Recomputed from whatever's currently loaded — fires on initial load too,
@@ -4502,7 +5359,7 @@ def update_latest_shot(_dataset_version, variable):
     Input("search-highlight-enabled", "data"),
     Input("latest-shot", "data"),
     Input("latest-shot-highlight-enabled", "data"),
-    Input("selected-variable", "data"),
+    Input("dataset-key", "data"),
     Input("dataset-version", "data"),
 )
 def update_umap(
@@ -4579,7 +5436,7 @@ def update_umap(
     Input("search-highlight-enabled", "data"),
     Input("latest-shot", "data"),
     Input("latest-shot-highlight-enabled", "data"),
-    Input("selected-variable", "data"),
+    Input("dataset-key", "data"),
     Input("dataset-version", "data"),
 )
 def update_pair_plot(
@@ -4655,14 +5512,14 @@ def update_pair_plot(
     Input("umap-plot", "clickData"),
     Input("pair-plot", "clickData"),
     Input("shot-table", "active_cell"),
-    Input("selected-variable", "data"),
+    Input("dataset-key", "data"),
     State("shot-table", "derived_virtual_data"),
     prevent_initial_call=True,
 )
 def update_selected_shot(umap_click, pair_click, active_cell, variable, virtual_data):
     triggered_id = dash.ctx.triggered_id
     # Switching variable clears the selection — the shot may not exist in the new table.
-    if triggered_id == "selected-variable":
+    if triggered_id == "dataset-key":
         return None
     ds = get_dataset(variable)
     if ds is None:
@@ -4679,7 +5536,7 @@ def update_selected_shot(umap_click, pair_click, active_cell, variable, virtual_
 @app.callback(
     Output("shot-table", "data"),
     Input("shot-id-search", "value"),
-    Input("selected-variable", "data"),
+    Input("dataset-key", "data"),
     Input("dataset-version", "data"),
 )
 def filter_table_by_shot_id(search, variable, _dataset_version):
@@ -4785,7 +5642,7 @@ app.clientside_callback(
 @app.callback(
     Output("shot-info-panel", "children"),
     Input("selected-shot", "data"),
-    Input("selected-variable", "data"),
+    Input("dataset-key", "data"),
 )
 def update_shot_info(selected_shot, variable):
     ds = get_dataset(variable)
@@ -4844,13 +5701,15 @@ if SHOW_TRACES:
         Input("selected-shot", "data"),
         Input("cfg-signals", "data"),
         Input("cfg-time-window", "data"),
+        Input("cfg-timebase-hz", "data"),
+        Input("cfg-backend-options", "data"),
         prevent_initial_call=True,
     )
-    def update_traces(shot_id, cfg_signals, cfg_time_window):
+    def update_traces(shot_id, cfg_signals, cfg_time_window, cfg_timebase, cfg_options):
         if shot_id is None:
             return dash.no_update, dash.no_update
         try:
-            shot_df = load_shot_traces(shot_id, cfg_signals, cfg_time_window)
+            shot_df = load_shot_traces(shot_id, cfg_signals, cfg_time_window, cfg_timebase, cfg_options)
         except Exception as exc:
             log.error("[update_traces] error loading shot %d: %s", shot_id, exc)
             return empty_traces_fig(f"Error loading shot {shot_id}"), f"Shot {shot_id} — error"
@@ -4869,7 +5728,7 @@ if SHOW_TRACES:
         @app.callback(
             Output("shap-container", "children"),
             Input("selected-shot", "data"),
-            Input("selected-variable", "data"),
+            Input("dataset-key", "data"),
         )
         def update_shap(shot_id, variable):
             ds = get_dataset(variable)
@@ -4909,7 +5768,7 @@ if SHOW_TRACES:
     State("cluster-eps", "value"),
     State("cluster-min-samples", "value"),
     State("cluster-use-projection", "value"),
-    State("selected-variable", "data"),
+    State("dataset-key", "data"),
     prevent_initial_call=True,
 )
 def run_clustering(n_clicks, algorithm, features, n_clusters, eps, min_samples, use_projection, variable):
@@ -5016,12 +5875,19 @@ def update_cluster_names(name_values, cluster_labels):
     Input("compute-centroid-btn", "n_clicks"),
     Input("cfg-signals", "data"),
     Input("cfg-time-window", "data"),
+    Input("cfg-timebase-hz", "data"),
+    Input("cfg-backend-options", "data"),
     prevent_initial_call=True,
 )
-def compute_centroid_data(cluster_representatives, _btn, cfg_signals, cfg_time_window):
+def compute_centroid_data(cluster_representatives, _btn, cfg_signals, cfg_time_window, cfg_timebase, cfg_options):
     if not cluster_representatives:
         return None, ""
-    return _load_cluster_representative_traces(cluster_representatives, cfg_signals, cfg_time_window), ""
+    return (
+        _load_cluster_representative_traces(
+            cluster_representatives, cfg_signals, cfg_time_window, cfg_timebase, cfg_options
+        ),
+        "",
+    )
 
 
 @app.callback(
@@ -5046,7 +5912,7 @@ def render_centroid_fig(centroid_data, cluster_names, cfg_signals):
     Input("download-table-btn", "n_clicks"),
     State("cluster-labels", "data"),
     State("cluster-names", "data"),
-    State("selected-variable", "data"),
+    State("dataset-key", "data"),
     prevent_initial_call=True,
 )
 def download_table(n_clicks, cluster_labels, cluster_names, variable):
@@ -5072,9 +5938,6 @@ def download_table(n_clicks, cluster_labels, cluster_names, variable):
 # ---------------------------------------------------------------------------
 # Parameter visibility callbacks
 # ---------------------------------------------------------------------------
-
-_SHOW = {}
-_HIDE = {"display": "none"}
 
 
 @app.callback(
@@ -5130,7 +5993,7 @@ def toggle_outlier_features_row(use_proj):
     State("outlier-contamination", "value"),
     State("outlier-n-neighbors", "value"),
     State("outlier-use-projection", "value"),
-    State("selected-variable", "data"),
+    State("dataset-key", "data"),
     prevent_initial_call=True,
 )
 def run_outlier_detection(n_clicks, algorithm, features, contamination, n_neighbors, use_projection, variable):
@@ -5169,10 +6032,21 @@ def run_outlier_detection(n_clicks, algorithm, features, contamination, n_neighb
     Input("outlier-labels", "data"),
     Input("cfg-signals", "data"),
     Input("cfg-time-window", "data"),
+    Input("cfg-timebase-hz", "data"),
+    Input("cfg-backend-options", "data"),
     prevent_initial_call=True,
 )
-def compute_outlier_traces(outlier_labels, cfg_signals, cfg_time_window):
-    return _compute_outlier_traces_data(outlier_labels, signals=cfg_signals, time_window=cfg_time_window), ""
+def compute_outlier_traces(outlier_labels, cfg_signals, cfg_time_window, cfg_timebase, cfg_options):
+    return (
+        _compute_outlier_traces_data(
+            outlier_labels,
+            signals=cfg_signals,
+            time_window=cfg_time_window,
+            timebase_hz=cfg_timebase,
+            backend_options=cfg_options,
+        ),
+        "",
+    )
 
 
 @app.callback(
@@ -5203,7 +6077,7 @@ def render_outlier_traces(outlier_traces_data, cfg_signals):
     Output("corr-plot", "figure"),
     Input("corr-features", "value"),
     Input("active-filters", "data"),
-    Input("selected-variable", "data"),
+    Input("dataset-key", "data"),
 )
 def update_correlation(features, active_filters, variable):
     ds = get_dataset(variable)
@@ -5333,6 +6207,13 @@ def _lin_resolve(
     ds = get_dataset(variable)
     if ds is None:
         return None, SELECT_VARIABLE_MSG
+    # The whole tab needs a reference column. Its callbacks are registered
+    # whether one is configured or not, because Dash cannot add a callback after
+    # the app starts and the Configuration tab can set the column while the app
+    # runs. Stopping here keeps them from doing the work for a lineage that
+    # cannot exist, and tells the user what is missing.
+    if not ds.ref_adjacency:
+        return None, _LIN_NO_REFERENCE_MSG
     if subject is None:
         return None, "Select a shot, or wait for the first shot to load"
     subject = int(subject)
@@ -5409,7 +6290,7 @@ def _lin_default_columns(variable, subject, scope, metric) -> list[str]:
     Output("lin-subject-shot", "data"),
     Input("selected-shot", "data"),
     Input("latest-shot", "data"),
-    Input("selected-variable", "data"),
+    Input("dataset-key", "data"),
     Input("dataset-version", "data"),
 )
 def resolve_lineage_subject(selected_shot, latest_shot, variable, _dataset_version):
@@ -5429,271 +6310,280 @@ def resolve_lineage_subject(selected_shot, latest_shot, variable, _dataset_versi
     return None
 
 
-if SHOW_REF_TOGGLE:
+@app.callback(
+    Output("lin-subject-display", "children"),
+    Input("lin-subject-shot", "data"),
+    Input("lin-scope", "value"),
+    Input("dataset-key", "data"),
+    Input("dataset-version", "data"),
+    State("selected-shot", "data"),
+)
+def update_lineage_subject_display(subject, scope, variable, _dataset_version, selected_shot):
+    ds = get_dataset(variable)
+    if ds is None:
+        return SELECT_VARIABLE_MSG
+    if subject is None:
+        return "No shot selected, and no shots loaded yet"
+    subject = int(subject)
+    origin = "selected" if selected_shot is not None and int(selected_shot) == subject else "latest"
+    if subject not in ds.ref_adjacency:
+        return f"Subject: shot {subject} ({origin}) — no reference shot"
+    lineage, excluded = get_reference_lineage(subject, ds.ref_parent, ds.ref_adjacency, scope=scope or "chain")
+    text = f"Subject: shot {subject} ({origin}) — {len(lineage)} shots in lineage"
+    reference = ds.ref_parent.get(subject)
+    if reference is not None:
+        text += f", reference {reference}"
+    return text
 
-    @app.callback(
-        Output("lin-subject-display", "children"),
-        Input("lin-subject-shot", "data"),
-        Input("lin-scope", "value"),
-        Input("selected-variable", "data"),
-        Input("dataset-version", "data"),
-        State("selected-shot", "data"),
+
+@app.callback(
+    Output("lin-columns-dd", "options"),
+    Input("lin-columns-dd", "search_value"),
+    Input("dataset-key", "data"),
+    State("lin-columns-dd", "value"),
+)
+def update_lineage_column_options(search_value, variable, selected):
+    """Offer a searchable slice of the comparison columns."""
+    return _lin_option_pool(_lin_candidates(get_dataset(variable)), selected, search_value)
+
+
+@app.callback(
+    Output("lin-columns-dd", "value"),
+    Input("lin-cols-changed-btn", "n_clicks"),
+    Input("lin-cols-features-btn", "n_clicks"),
+    Input("lin-cols-clear-btn", "n_clicks"),
+    Input("lin-subject-shot", "data"),
+    Input("lin-scope", "value"),
+    Input("dataset-key", "data"),
+    State("lin-metric", "value"),
+    State("lin-columns-dd", "value"),
+)
+def seed_lineage_columns(_changed, _features, _clear, subject, scope, variable, metric, current):
+    """Seed the selector with every projection feature, and leave a hand-picked selection alone.
+
+    The projection features are the default because they are the variables
+    the embedding — and therefore the whole dashboard's notion of "similar
+    shot" — is built from: a lineage is worth tracking in exactly those.
+    All of them, not a truncated head, because a silently shortened default
+    reads as "these are the features".
+
+    Re-seeding on every click would discard the columns the user chose,
+    which makes the tab unusable for comparing one variable across shots.
+    """
+    triggered = dash.ctx.triggered_id
+    if triggered == "lin-cols-clear-btn":
+        return []
+    if triggered == "lin-cols-features-btn":
+        return _lin_projection_features(get_dataset(variable))
+    if triggered == "lin-cols-changed-btn":
+        return _lin_default_columns(variable, subject, scope, metric)
+    if current:
+        return dash.no_update
+    return _lin_projection_features(get_dataset(variable)) or _lin_default_columns(variable, subject, scope, metric)
+
+
+@app.callback(
+    Output("lin-columns-count", "children"),
+    Input("lin-columns-dd", "value"),
+    Input("dataset-key", "data"),
+)
+def update_lineage_column_count(columns, variable):
+    return f"{len(columns or [])} of {len(_lin_candidates(get_dataset(variable)))} variables"
+
+
+@app.callback(
+    Output("lin-change-cards", "children"),
+    Input("lin-subject-shot", "data"),
+    Input("lin-scope", "value"),
+    Input("lin-card-metric", "value"),
+    Input("lin-respect-filters", "value"),
+    Input("active-filters", "data"),
+    Input("dataset-key", "data"),
+    Input("dataset-version", "data"),
+)
+def update_lineage_cards(subject, scope, card_metric, respect, active_filters, variable, _dataset_version):
+    """The summary card: every variable, biggest change first.
+
+    Built over every candidate column rather than the user's selection, so
+    it summarises the whole table and the tally underneath means what it
+    says. Unchanged variables are kept: they land at the end of the
+    ranking, where they answer "did anything else move" without the reader
+    having to widen the selection to find out.
+
+    Ranked by its own measure, not the history table's colour metric —
+    "what moved most" is a different question, and only a measure that is
+    comparable between columns can answer it.
+    """
+    view, message = _lin_resolve(variable, subject, scope, card_metric, respect, active_filters)
+    if view is None:
+        return _lin_message(message or "")
+    items = rank_lineage_changes(view.matrix, top_n=_LIN_CARD_MAX, changed_only=False)
+    return _lin_render_change_cards(view.matrix, items, view.subject, len(view.compare_cols))
+
+
+@app.callback(
+    Output("lin-history-table", "data"),
+    Output("lin-history-table", "columns"),
+    Output("lin-history-table", "style_data_conditional"),
+    Output("lin-history-table", "tooltip_data"),
+    Output("lin-history-msg", "children"),
+    Input("lin-subject-shot", "data"),
+    Input("lin-scope", "value"),
+    Input("lin-metric", "value"),
+    Input("lin-columns-dd", "value"),
+    Input("lin-respect-filters", "value"),
+    Input("active-filters", "data"),
+    Input("dataset-key", "data"),
+    Input("dataset-version", "data"),
+)
+def update_lineage_history(subject, scope, metric, columns, respect, active_filters, variable, _dataset_version):
+    view, message = _lin_resolve(variable, subject, scope, metric, respect, active_filters, columns=columns or [])
+    if view is None:
+        return [], [], [], [], _lin_message(message or "")
+
+    matrix = view.matrix
+    notes = [f"{len(matrix.columns)} variable(s) shown; scroll sideways for more"]
+    if matrix.excluded:
+        notes.append(f"{len(matrix.excluded)} lineage shot(s) hidden by the active filters, shown in grey")
+    if matrix.metric == "absolute":
+        notes.append("colour is scaled to this lineage only")
+    return (
+        _lin_table_data(matrix, matrix.columns, view.subject),
+        _lin_table_columns(matrix.columns, matrix.kinds),
+        _lin_style_data_conditional(matrix, matrix.columns, view.subject),
+        _lin_tooltip_data(matrix, matrix.columns),
+        html.Div("  ·  ".join(notes), style=dict(fontSize="10px", color="#888", padding="4px 2px")),
     )
-    def update_lineage_subject_display(subject, scope, variable, _dataset_version, selected_shot):
-        ds = get_dataset(variable)
-        if ds is None:
-            return SELECT_VARIABLE_MSG
-        if subject is None:
-            return "No shot selected, and no shots loaded yet"
-        subject = int(subject)
-        origin = "selected" if selected_shot is not None and int(selected_shot) == subject else "latest"
-        if subject not in ds.ref_adjacency:
-            return f"Subject: shot {subject} ({origin}) — no reference shot"
-        lineage, excluded = get_reference_lineage(subject, ds.ref_parent, ds.ref_adjacency, scope=scope or "chain")
-        text = f"Subject: shot {subject} ({origin}) — {len(lineage)} shots in lineage"
-        reference = ds.ref_parent.get(subject)
-        if reference is not None:
-            text += f", reference {reference}"
-        return text
 
-    @app.callback(
-        Output("lin-columns-dd", "options"),
-        Input("lin-columns-dd", "search_value"),
-        Input("selected-variable", "data"),
-        State("lin-columns-dd", "value"),
-    )
-    def update_lineage_column_options(search_value, variable, selected):
-        """Offer a searchable slice of the comparison columns."""
-        return _lin_option_pool(_lin_candidates(get_dataset(variable)), selected, search_value)
 
-    @app.callback(
-        Output("lin-columns-dd", "value"),
-        Input("lin-cols-changed-btn", "n_clicks"),
-        Input("lin-cols-features-btn", "n_clicks"),
-        Input("lin-cols-clear-btn", "n_clicks"),
-        Input("lin-subject-shot", "data"),
-        Input("lin-scope", "value"),
-        Input("selected-variable", "data"),
-        State("lin-metric", "value"),
-        State("lin-columns-dd", "value"),
-    )
-    def seed_lineage_columns(_changed, _features, _clear, subject, scope, variable, metric, current):
-        """Seed the selector with every projection feature, and leave a hand-picked selection alone.
+@app.callback(
+    Output("lin-notes-panel", "children"),
+    Input("lin-subject-shot", "data"),
+    Input("lin-scope", "value"),
+    Input("dataset-key", "data"),
+    Input("dataset-version", "data"),
+)
+def update_lineage_notes(subject, scope, variable, _dataset_version):
+    """The operator's own notes for each shot in the lineage."""
+    view, message = _lin_resolve(variable, subject, scope, "zscore", [], None)
+    if view is None:
+        return _lin_message(message or "")
+    note_cols = _lin_note_columns(view.compare_cols, view.ds.ref_numeric_cols)
+    return _lin_notes_table(view.ds.df, view.lineage, view.subject, note_cols)
 
-        The projection features are the default because they are the variables
-        the embedding — and therefore the whole dashboard's notion of "similar
-        shot" — is built from: a lineage is worth tracking in exactly those.
-        All of them, not a truncated head, because a silently shortened default
-        reads as "these are the features".
 
-        Re-seeding on every click would discard the columns the user chose,
-        which makes the tab unusable for comparing one variable across shots.
-        """
-        triggered = dash.ctx.triggered_id
-        if triggered == "lin-cols-clear-btn":
-            return []
-        if triggered == "lin-cols-features-btn":
-            return _lin_projection_features(get_dataset(variable))
-        if triggered == "lin-cols-changed-btn":
-            return _lin_default_columns(variable, subject, scope, metric)
-        if current:
-            return dash.no_update
-        return _lin_projection_features(get_dataset(variable)) or _lin_default_columns(variable, subject, scope, metric)
+@app.callback(
+    Output("lin-tree-plot", "figure"),
+    Input("lin-subject-shot", "data"),
+    Input("lin-scope", "value"),
+    Input("lin-respect-filters", "value"),
+    Input("active-filters", "data"),
+    Input("dataset-key", "data"),
+    Input("dataset-version", "data"),
+)
+def update_lineage_tree(subject, scope, respect, active_filters, variable, _dataset_version):
+    view, message = _lin_resolve(variable, subject, scope, "zscore", respect, active_filters)
+    if view is None:
+        return _empty_fig(message or "")
+    return _lin_tree_fig(view.matrix, view.ds.ref_parent, view.subject)
 
-    @app.callback(
-        Output("lin-columns-count", "children"),
-        Input("lin-columns-dd", "value"),
-        Input("selected-variable", "data"),
-    )
-    def update_lineage_column_count(columns, variable):
-        return f"{len(columns or [])} of {len(_lin_candidates(get_dataset(variable)))} variables"
 
-    @app.callback(
-        Output("lin-change-cards", "children"),
-        Input("lin-subject-shot", "data"),
-        Input("lin-scope", "value"),
-        Input("lin-card-metric", "value"),
-        Input("lin-respect-filters", "value"),
-        Input("active-filters", "data"),
-        Input("selected-variable", "data"),
-        Input("dataset-version", "data"),
-    )
-    def update_lineage_cards(subject, scope, card_metric, respect, active_filters, variable, _dataset_version):
-        """The summary card: every variable, biggest change first.
+@app.callback(
+    Output("lin-spark-columns", "options"),
+    Input("lin-spark-columns", "search_value"),
+    Input("dataset-key", "data"),
+    State("lin-spark-columns", "value"),
+)
+def update_lineage_spark_options(search_value, variable, selected):
+    """Offer the same searchable column pool as the tab's own selector."""
+    return _lin_option_pool(_lin_candidates(get_dataset(variable)), selected, search_value)
 
-        Built over every candidate column rather than the user's selection, so
-        it summarises the whole table and the tally underneath means what it
-        says. Unchanged variables are kept: they land at the end of the
-        ranking, where they answer "did anything else move" without the reader
-        having to widen the selection to find out.
 
-        Ranked by its own measure, not the history table's colour metric —
-        "what moved most" is a different question, and only a measure that is
-        comparable between columns can answer it.
-        """
-        view, message = _lin_resolve(variable, subject, scope, card_metric, respect, active_filters)
-        if view is None:
-            return _lin_message(message or "")
-        items = rank_lineage_changes(view.matrix, top_n=_LIN_CARD_MAX, changed_only=False)
-        return _lin_render_change_cards(view.matrix, items, view.subject, len(view.compare_cols))
+@app.callback(
+    Output("lin-spark-columns", "value"),
+    Output("lin-spark-seeded", "data"),
+    Input("lin-spark-top-btn", "n_clicks"),
+    Input("lin-subject-shot", "data"),
+    Input("lin-scope", "value"),
+    Input("lin-card-metric", "value"),
+    Input("dataset-key", "data"),
+    State("lin-spark-columns", "value"),
+    State("lin-spark-seeded", "data"),
+)
+def seed_lineage_spark_columns(_top, subject, scope, card_metric, variable, current, seeded):
+    """Open on the summary card's top variables, and keep a hand-picked set.
 
-    @app.callback(
-        Output("lin-history-table", "data"),
-        Output("lin-history-table", "columns"),
-        Output("lin-history-table", "style_data_conditional"),
-        Output("lin-history-table", "tooltip_data"),
-        Output("lin-history-msg", "children"),
-        Input("lin-subject-shot", "data"),
-        Input("lin-scope", "value"),
-        Input("lin-metric", "value"),
-        Input("lin-columns-dd", "value"),
-        Input("lin-respect-filters", "value"),
-        Input("active-filters", "data"),
-        Input("selected-variable", "data"),
-        Input("dataset-version", "data"),
-    )
-    def update_lineage_history(subject, scope, metric, columns, respect, active_filters, variable, _dataset_version):
-        view, message = _lin_resolve(variable, subject, scope, metric, respect, active_filters, columns=columns or [])
-        if view is None:
-            return [], [], [], [], _lin_message(message or "")
+    The card is already the answer to "what moved", so the panels start on
+    the head of that same ranking and the two views agree on the first
+    screen. That default depends on the subject, so it has to be refreshed
+    when the subject changes — but only while it is still the default:
+    comparing the selection against the last seeded value is what tells a
+    selection the app filled in from one somebody chose, and a chosen
+    variable must survive a click on another shot. The button re-seeds
+    either way.
+    """
+    if dash.ctx.triggered_id != "lin-spark-top-btn" and current and list(current) != list(seeded or []):
+        return dash.no_update, dash.no_update
+    picked = _lin_card_ranked_columns(variable, subject, scope, card_metric, _LIN_SPARK_PANELS)
+    return picked, picked
 
-        matrix = view.matrix
-        notes = [f"{len(matrix.columns)} variable(s) shown; scroll sideways for more"]
-        if matrix.excluded:
-            notes.append(f"{len(matrix.excluded)} lineage shot(s) hidden by the active filters, shown in grey")
-        if matrix.metric == "absolute":
-            notes.append("colour is scaled to this lineage only")
-        return (
-            _lin_table_data(matrix, matrix.columns, view.subject),
-            _lin_table_columns(matrix.columns, matrix.kinds),
-            _lin_style_data_conditional(matrix, matrix.columns, view.subject),
-            _lin_tooltip_data(matrix, matrix.columns),
-            html.Div("  ·  ".join(notes), style=dict(fontSize="10px", color="#888", padding="4px 2px")),
-        )
 
-    @app.callback(
-        Output("lin-notes-panel", "children"),
-        Input("lin-subject-shot", "data"),
-        Input("lin-scope", "value"),
-        Input("selected-variable", "data"),
-        Input("dataset-version", "data"),
-    )
-    def update_lineage_notes(subject, scope, variable, _dataset_version):
-        """The operator's own notes for each shot in the lineage."""
-        view, message = _lin_resolve(variable, subject, scope, "zscore", [], None)
-        if view is None:
-            return _lin_message(message or "")
-        note_cols = _lin_note_columns(view.compare_cols, view.ds.ref_numeric_cols)
-        return _lin_notes_table(view.ds.df, view.lineage, view.subject, note_cols)
+@app.callback(
+    Output("lin-spark-plot", "figure"),
+    Output("lin-spark-msg", "children"),
+    Input("lin-subtabs", "value"),
+    Input("lin-subject-shot", "data"),
+    Input("lin-scope", "value"),
+    Input("lin-card-metric", "value"),
+    Input("lin-spark-columns", "value"),
+    Input("dataset-key", "data"),
+    Input("dataset-version", "data"),
+)
+def update_lineage_sparklines(subtab, subject, scope, card_metric, columns, variable, _dataset_version):
+    """One panel per variable chosen for this view, in the card's order.
 
-    @app.callback(
-        Output("lin-tree-plot", "figure"),
-        Input("lin-subject-shot", "data"),
-        Input("lin-scope", "value"),
-        Input("lin-respect-filters", "value"),
-        Input("active-filters", "data"),
-        Input("selected-variable", "data"),
-        Input("dataset-version", "data"),
-    )
-    def update_lineage_tree(subject, scope, respect, active_filters, variable, _dataset_version):
-        view, message = _lin_resolve(variable, subject, scope, "zscore", respect, active_filters)
-        if view is None:
-            return _empty_fig(message or "")
-        return _lin_tree_fig(view.matrix, view.ds.ref_parent, view.subject)
+    The panels are the selection — every variable in it, ordered the way
+    the summary card ranks them. Ranking columns out of a view the user
+    selected by hand would make it disagree with its own selector, and
+    "this one held still" is itself an answer.
+    """
+    if subtab != "lin-spark":
+        return dash.no_update, dash.no_update
+    view, message = _lin_resolve(variable, subject, scope, card_metric, [], None, columns=columns or [])
+    if view is None:
+        return _empty_fig(message or ""), ""
+    selected = list(view.matrix.columns)
+    ranked = [item.column for item in rank_lineage_changes(view.matrix, top_n=None, changed_only=False)]
+    ranked = ranked or selected  # a lineage of one has nothing to rank
+    drawn = [c for c in ranked if view.matrix.kinds.get(c) == "numeric"]
+    capped = drawn[:_LIN_SPARK_HARD_MAX]
+    notes = [f"{len(capped)} of {len(selected)} selected variable(s) drawn"]
+    if len(capped) < len(drawn):
+        notes.append(f"at most {_LIN_SPARK_HARD_MAX} panels are drawn — narrow the selection")
+    n_text = len(selected) - len(drawn)
+    if n_text:
+        notes.append(f"{n_text} text variable(s) have no sparkline")
+    return _lin_spark_fig(view.matrix, capped, view.subject), "  ·  ".join(notes)
 
-    @app.callback(
-        Output("lin-spark-columns", "options"),
-        Input("lin-spark-columns", "search_value"),
-        Input("selected-variable", "data"),
-        State("lin-spark-columns", "value"),
-    )
-    def update_lineage_spark_options(search_value, variable, selected):
-        """Offer the same searchable column pool as the tab's own selector."""
-        return _lin_option_pool(_lin_candidates(get_dataset(variable)), selected, search_value)
 
-    @app.callback(
-        Output("lin-spark-columns", "value"),
-        Output("lin-spark-seeded", "data"),
-        Input("lin-spark-top-btn", "n_clicks"),
-        Input("lin-subject-shot", "data"),
-        Input("lin-scope", "value"),
-        Input("lin-card-metric", "value"),
-        Input("selected-variable", "data"),
-        State("lin-spark-columns", "value"),
-        State("lin-spark-seeded", "data"),
-    )
-    def seed_lineage_spark_columns(_top, subject, scope, card_metric, variable, current, seeded):
-        """Open on the summary card's top variables, and keep a hand-picked set.
+@app.callback(
+    Output("selected-shot", "data", allow_duplicate=True),
+    Input("lin-tree-plot", "clickData"),
+    State("dataset-key", "data"),
+    prevent_initial_call=True,
+)
+def select_shot_from_lineage_tree(click_data, variable):
+    """Clicking a lineage node selects that shot everywhere else.
 
-        The card is already the answer to "what moved", so the panels start on
-        the head of that same ranking and the two views agree on the first
-        screen. That default depends on the subject, so it has to be refreshed
-        when the subject changes — but only while it is still the default:
-        comparing the selection against the last seeded value is what tells a
-        selection the app filled in from one somebody chose, and a chosen
-        variable must survive a click on another shot. The button re-seeds
-        either way.
-        """
-        if dash.ctx.triggered_id != "lin-spark-top-btn" and current and list(current) != list(seeded or []):
-            return dash.no_update, dash.no_update
-        picked = _lin_card_ranked_columns(variable, subject, scope, card_metric, _LIN_SPARK_PANELS)
-        return picked, picked
-
-    @app.callback(
-        Output("lin-spark-plot", "figure"),
-        Output("lin-spark-msg", "children"),
-        Input("lin-subtabs", "value"),
-        Input("lin-subject-shot", "data"),
-        Input("lin-scope", "value"),
-        Input("lin-card-metric", "value"),
-        Input("lin-spark-columns", "value"),
-        Input("selected-variable", "data"),
-        Input("dataset-version", "data"),
-    )
-    def update_lineage_sparklines(subtab, subject, scope, card_metric, columns, variable, _dataset_version):
-        """One panel per variable chosen for this view, in the card's order.
-
-        The panels are the selection — every variable in it, ordered the way
-        the summary card ranks them. Ranking columns out of a view the user
-        selected by hand would make it disagree with its own selector, and
-        "this one held still" is itself an answer.
-        """
-        if subtab != "lin-spark":
-            return dash.no_update, dash.no_update
-        view, message = _lin_resolve(variable, subject, scope, card_metric, [], None, columns=columns or [])
-        if view is None:
-            return _empty_fig(message or ""), ""
-        selected = list(view.matrix.columns)
-        ranked = [item.column for item in rank_lineage_changes(view.matrix, top_n=None, changed_only=False)]
-        ranked = ranked or selected  # a lineage of one has nothing to rank
-        drawn = [c for c in ranked if view.matrix.kinds.get(c) == "numeric"]
-        capped = drawn[:_LIN_SPARK_HARD_MAX]
-        notes = [f"{len(capped)} of {len(selected)} selected variable(s) drawn"]
-        if len(capped) < len(drawn):
-            notes.append(f"at most {_LIN_SPARK_HARD_MAX} panels are drawn — narrow the selection")
-        n_text = len(selected) - len(drawn)
-        if n_text:
-            notes.append(f"{n_text} text variable(s) have no sparkline")
-        return _lin_spark_fig(view.matrix, capped, view.subject), "  ·  ".join(notes)
-
-    @app.callback(
-        Output("selected-shot", "data", allow_duplicate=True),
-        Input("lin-tree-plot", "clickData"),
-        State("selected-variable", "data"),
-        prevent_initial_call=True,
-    )
-    def select_shot_from_lineage_tree(click_data, variable):
-        """Clicking a lineage node selects that shot everywhere else.
-
-        Needs allow_duplicate because update_selected_shot already owns this
-        Output, and it cannot take the tree as an Input: that callback is
-        registered unconditionally, and Dash rejects an Input naming a
-        component that is absent when no reference column is configured.
-        """
-        ds = get_dataset(variable)
-        if ds is None:
-            return dash.no_update
-        return _extract_shot_id(ds.df, click_data) or dash.no_update
+    Needs allow_duplicate because update_selected_shot already owns this
+    Output, and it cannot take the tree as an Input: that callback is
+    registered unconditionally, and Dash rejects an Input naming a
+    component that is absent when no reference column is configured.
+    """
+    ds = get_dataset(variable)
+    if ds is None:
+        return dash.no_update
+    return _extract_shot_id(ds.df, click_data) or dash.no_update
 
 
 # ---------------------------------------------------------------------------
@@ -5718,7 +6608,7 @@ def populate_search_from_selection(selected_shot):
     State("search-query-shot", "value"),
     State("search-k", "value"),
     State("search-features", "value"),
-    State("selected-variable", "data"),
+    State("dataset-key", "data"),
     prevent_initial_call=True,
 )
 def find_similar_shots(_n, query_shot_id, k, features, variable):
@@ -5780,10 +6670,21 @@ def find_similar_shots(_n, query_shot_id, k, features, variable):
     Input("search-results", "data"),
     Input("cfg-signals", "data"),
     Input("cfg-time-window", "data"),
+    Input("cfg-timebase-hz", "data"),
+    Input("cfg-backend-options", "data"),
     prevent_initial_call=True,
 )
-def compute_search_traces(search_results, cfg_signals, cfg_time_window):
-    return _load_shots_traces(search_results or [], signals=cfg_signals, time_window=cfg_time_window), ""
+def compute_search_traces(search_results, cfg_signals, cfg_time_window, cfg_timebase, cfg_options):
+    return (
+        _load_shots_traces(
+            search_results or [],
+            signals=cfg_signals,
+            time_window=cfg_time_window,
+            timebase_hz=cfg_timebase,
+            backend_options=cfg_options,
+        ),
+        "",
+    )
 
 
 @app.callback(
@@ -5813,55 +6714,217 @@ def render_search_traces(search_traces_data, cfg_signals):
 
 
 @app.callback(
+    Output("lineage-tab", "disabled"),
+    Output("ref-toggle-btn", "style"),
+    Input("dataset-key", "data"),
+)
+def update_reference_feature_visibility(key):
+    """Turn the Lineage tab and the reference-graph toggle on or off.
+
+    Both are always in the layout, so this only changes whether they can be
+    used. That is what lets the Configuration tab switch the feature on without
+    a restart: a callback cannot be registered after the app starts, but a
+    ``disabled`` flag and a style can be written at any time.
+    """
+    ds = get_dataset(key)
+    available = bool(ds is not None and ds.ref_adjacency)
+    return not available, dict(_REF_TOGGLE_STYLE, **({} if available else _HIDE))
+
+
+@app.callback(
+    Output("dataset-key", "data"),
+    Input("selected-variable", "data"),
+    Input("cfg-projection", "data"),
+    Input("cfg-reference-shot-col", "data"),
+)
+def compute_dataset_key(variable, projection, reference):
+    """Combine the selected variable and the applied settings into one key.
+
+    Every data callback depends on this single value, so a settings change fans
+    out once. Anything not applied in this browser falls back to the config
+    file, which is what makes a page that never opens the tab behave as before.
+    """
+    return _dataset_key_from_stores(variable, projection, reference).to_store()
+
+
+@app.callback(
     Output("cfg-signals", "data"),
     Output("cfg-time-window", "data"),
+    Output("cfg-timebase-hz", "data"),
+    Output("cfg-backend-options", "data"),
+    Output("cfg-projection", "data"),
+    Output("cfg-reference-shot-col", "data"),
     Output("cfg-status", "children"),
     Input("cfg-apply-btn", "n_clicks"),
     State("cfg-signal-select", "value"),
     State("cfg-min-time", "value"),
     State("cfg-max-time", "value"),
+    State("cfg-timebase-hz-input", "value"),
+    State({"type": "cfg-opt-key", "index": ALL}, "value"),
+    State({"type": "cfg-opt-val", "index": ALL}, "value"),
+    State("cfg-projection-method", "value"),
+    State("cfg-n-components", "value"),
+    State("cfg-random-state", "value"),
+    State("cfg-n-neighbors", "value"),
+    State("cfg-min-dist", "value"),
+    State("cfg-metric", "value"),
+    State("cfg-umap-features", "value"),
+    State("cfg-umap-exclude-features", "value"),
+    State("cfg-reference-shot-col-select", "value"),
     prevent_initial_call=True,
 )
-def apply_config(_n_clicks, signals, min_time, max_time):
-    """Publish the selection. A bad value changes nothing and shows a message."""
+def apply_config(
+    _n_clicks,
+    signals,
+    min_time,
+    max_time,
+    timebase_hz,
+    option_keys,
+    option_values,
+    projection_method,
+    n_components,
+    random_state,
+    n_neighbors,
+    min_dist,
+    metric,
+    umap_features,
+    umap_exclude_features,
+    reference_shot_col,
+):
+    """Publish every setting in the tab. A bad value changes nothing.
+
+    Validation is left to the pydantic models in config_schema.py, which hold
+    the only definition of each rule, and their message is shown as written. So
+    a rule is never stated twice, and the tab cannot drift from the config file.
+    """
+    nothing = (dash.no_update,) * 6
+
     selected = [s.strip() for s in (signals or []) if s and s.strip()]
     if not selected:
-        return dash.no_update, dash.no_update, "Select at least one signal."
+        return (*nothing, "Select at least one signal.")
     if min_time is None or max_time is None:
-        return dash.no_update, dash.no_update, "Give a number for min_time and for max_time."
+        return (*nothing, "Give a number for min_time and for max_time.")
 
-    # TimeWindow holds the only definition of the ordering rule — see config_schema.py.
     try:
         window = TimeWindow(min_time=min_time, max_time=max_time)
+        options = ProjectionOptions(
+            n_components=n_components,
+            random_state=random_state,
+            n_neighbors=n_neighbors,
+            min_dist=min_dist,
+            metric=metric,
+        )
     except ValidationError as exc:
-        return dash.no_update, dash.no_update, exc.errors()[0]["msg"].removeprefix("Value error, ")
+        return (*nothing, exc.errors()[0]["msg"].removeprefix("Value error, "))
+
+    backend_options, bad_option = _collect_backend_options(option_keys, option_values)
+    if bad_option:
+        return (*nothing, bad_option)
 
     return (
         selected,
         {"min_time": window.min_time, "max_time": window.max_time},
-        f"Applied {len(selected)} signal(s) over {window.min_time}–{window.max_time} s.",
+        {"value": timebase_hz},
+        {"value": backend_options},
+        {
+            "projection_method": projection_method or PROJECTION_METHOD,
+            "umap_features": [c for c in (umap_features or []) if c],
+            "umap_exclude_features": [c for c in (umap_exclude_features or []) if c],
+            "projection_options": options.model_dump(),
+        },
+        {"value": reference_shot_col or None},
+        _apply_summary(selected, window, options, projection_method or PROJECTION_METHOD),
     )
+
+
+def _collect_backend_options(keys, values) -> tuple[dict[str, str], str | None]:
+    """Read the key/value grid. Returns the options and an error, if any.
+
+    Values stay strings, exactly as ``--backend-option KEY=VALUE`` leaves them,
+    so a backend reads them the same way whichever route they came in by.
+    """
+    options: dict[str, str] = {}
+    for key, value in zip(keys or [], values or []):
+        name = (key or "").strip()
+        if not name:
+            continue
+        if name in options:
+            return {}, f"The backend option '{name}' is given more than once."
+        options[name] = (value or "").strip()
+    return options, None
+
+
+def _apply_summary(signals, window, options, method) -> str:
+    """One line describing what was applied."""
+    parts = [
+        f"{len(signals)} signal(s)",
+        f"{window.min_time}\u2013{window.max_time} s",
+        method.upper(),
+    ]
+    if options.n_components != 2:
+        parts.append(f"{options.n_components} components")
+    return "Applied: " + ", ".join(parts) + "."
 
 
 @app.callback(
     Output("cfg-signals", "data", allow_duplicate=True),
     Output("cfg-time-window", "data", allow_duplicate=True),
+    Output("cfg-timebase-hz", "data", allow_duplicate=True),
+    Output("cfg-backend-options", "data", allow_duplicate=True),
+    Output("cfg-projection", "data", allow_duplicate=True),
+    Output("cfg-reference-shot-col", "data", allow_duplicate=True),
     Output("cfg-status", "children", allow_duplicate=True),
     Output("cfg-signal-select", "value"),
     Output("cfg-min-time", "value"),
     Output("cfg-max-time", "value"),
+    Output("cfg-timebase-hz-input", "value"),
+    Output("cfg-projection-method", "value"),
+    Output("cfg-n-components", "value"),
+    Output("cfg-random-state", "value"),
+    Output("cfg-n-neighbors", "value"),
+    Output("cfg-min-dist", "value"),
+    Output("cfg-metric", "value"),
+    Output("cfg-umap-features", "value"),
+    Output("cfg-umap-exclude-features", "value"),
+    Output("cfg-reference-shot-col-select", "value"),
+    Output({"type": "cfg-opt-key", "index": ALL}, "value"),
+    Output({"type": "cfg-opt-val", "index": ALL}, "value"),
     Input("cfg-reset-btn", "n_clicks"),
     prevent_initial_call=True,
 )
 def reset_config(_n_clicks):
-    """Put the signal list and the time window back to the config file values."""
+    """Put every setting, and every widget, back to the config file.
+
+    The stores go back to None rather than to the config values: None means
+    "nothing applied in this browser", which is what a reset is, and it keeps
+    a cleared setting from being remembered as an override.
+    """
+    # One value per rendered row. A backend that reads no options renders none,
+    # and Dash requires the list to match what the ALL pattern matched.
+    blank = [""] * _BACKEND_OPTION_ROWS
     return (
-        list(TIME_TRACE_SIGNALS),
-        {"min_time": MIN_TIME, "max_time": MAX_TIME},
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
         "Reset to the config file.",
         list(TIME_TRACE_SIGNALS),
         MIN_TIME,
         MAX_TIME,
+        UDA_TIMEBASE_HZ,
+        PROJECTION_METHOD,
+        PROJECTION_OPTIONS.n_components,
+        PROJECTION_OPTIONS.random_state,
+        PROJECTION_OPTIONS.n_neighbors,
+        PROJECTION_OPTIONS.min_dist,
+        PROJECTION_OPTIONS.metric,
+        list(UMAP_FEATURES) if UMAP_FEATURES else [],
+        list(UMAP_EXCLUDE_FEATURES),
+        REFERENCE_SHOT_COL,
+        blank,
+        blank,
     )
 
 
@@ -5910,12 +6973,194 @@ def update_signal_options(search_value, discovered, selected):
     Output("active-time-display", "children"),
     Input("cfg-signals", "data"),
     Input("cfg-time-window", "data"),
+    Input("cfg-timebase-hz", "data"),
+    Input("cfg-backend-options", "data"),
 )
-def update_config_summary(signals, time_window):
+def update_config_summary(signals, time_window, timebase, _options):
     """Keep the line above the time-trace pane the same as the applied values."""
     names = _effective_signals(signals)
     min_time, max_time = _effective_window(time_window)
-    return f"signals: {', '.join(names)}", f"time: {min_time}–{max_time} s"
+    time_text = f"time: {min_time}–{max_time} s"
+    if timebase is not None and timebase.get("value"):
+        time_text += f" @ {timebase['value']} Hz"
+    return f"signals: {', '.join(names)}", time_text
+
+
+@app.callback(
+    Output("cfg-umap-block", "style"),
+    Input("cfg-projection-method", "value"),
+)
+def toggle_projection_umap_block(method):
+    """Hide the UMAP-only parameters while the method is PCA.
+
+    The widgets stay in the tree and keep their values, so a change back to
+    UMAP uses what was set before.
+    """
+    return dict(marginTop="10px", **(_HIDE if method == "pca" else _SHOW))
+
+
+@app.callback(
+    Output("cfg-backend-option-hint", "children"),
+    Input("cfg-apply-btn", "n_clicks"),
+)
+def update_backend_option_hint(_n_clicks):
+    """Name the options the active backend reads, so the grid is not a guess.
+
+    A backend with no documented options gets no line at all. Saying that it
+    has none tells the user nothing they can act on.
+    """
+    known = _BACKEND_OPTION_NAMES.get(BACKEND)
+    if not known:
+        return ""
+    return f"The '{BACKEND}' backend reads: {', '.join(known)}."
+
+
+# The documented option names per backend, from docs/configuration.md. Used only
+# as a hint in the UI; an unlisted key is still passed through, because a plugin
+# backend can read anything.
+_BACKEND_OPTION_NAMES: dict[str, tuple[str, ...]] = {
+    "postgres": ("dsn", "trace_table", "shot_table", "schema", "shot_col", "time_col"),
+    "fairmast": ("format", "storage_options"),
+}
+
+
+@app.callback(
+    Output("cfg-umap-features", "value"),
+    Output("cfg-features-paste-status", "children"),
+    Input("cfg-features-paste-btn", "n_clicks"),
+    State("cfg-features-paste", "value"),
+    State("cfg-umap-features", "options"),
+    prevent_initial_call=True,
+)
+def use_pasted_features(_n_clicks, pasted, options):
+    """Put a pasted list of names into the feature selector.
+
+    Choosing 192 latent dimensions one at a time is not usable, and the
+    dropdown only renders the first few hundred names, so a long list has to
+    arrive some other way. Names not in the table are reported rather than
+    dropped in silence, because a typo here quietly changes the projection.
+    """
+    names = [n.strip() for n in re.split(r"[,\n\r\t;]+", pasted or "") if n.strip()]
+    if not names:
+        return dash.no_update, "Paste one or more column names first."
+
+    known = set(_cfg_feature_pool)
+    chosen = [n for n in dict.fromkeys(names) if n in known]
+    missing = [n for n in dict.fromkeys(names) if n not in known]
+    if not chosen:
+        return dash.no_update, f"None of those {len(names)} name(s) is a usable feature column."
+
+    status = f"Selected {len(chosen)} column(s)."
+    if missing:
+        shown = ", ".join(missing[:5])
+        more = f" and {len(missing) - 5} more" if len(missing) > 5 else ""
+        status += f" Not usable as features: {shown}{more}."
+    # The selected values must also be options, or Dash drops them.
+    return chosen, status
+
+
+@app.callback(
+    Output("cfg-umap-features", "options"),
+    Input("cfg-umap-features", "value"),
+    Input("cfg-umap-features", "search_value"),
+)
+def update_feature_options(selected, search_value):
+    """Keep the selected names as options.
+
+    Dash clears a value that has no matching option, and the list is capped, so
+    a name chosen from a paste or from the config file has to be added back.
+    """
+    return _cfg_column_options(_cfg_feature_pool, selected, search_value)
+
+
+@app.callback(
+    Output("cfg-umap-exclude-features", "options"),
+    Input("cfg-umap-exclude-features", "value"),
+    Input("cfg-umap-exclude-features", "search_value"),
+)
+def update_exclude_feature_options(selected, search_value):
+    return _cfg_column_options(_cfg_feature_pool, selected, search_value)
+
+
+@app.callback(
+    Output("cfg-reference-shot-col-select", "options"),
+    Input("cfg-reference-shot-col-select", "value"),
+    Input("cfg-reference-shot-col-select", "search_value"),
+)
+def update_reference_column_options(selected, search_value):
+    return _cfg_column_options(all_cols, [selected] if selected else [], search_value)
+
+
+@app.callback(
+    Output("refresh-interval", "interval"),
+    Output("refresh-interval", "disabled"),
+    Output("cfg-refresh-interval", "value"),
+    Input("cfg-apply-btn", "n_clicks"),
+    State("cfg-refresh-interval", "value"),
+)
+def update_refresh_interval(_n_clicks, seconds):
+    """Retime the live-update poll.
+
+    The dcc.Interval is already in the layout, so this only rewrites its props:
+    an empty value stops the poll, and any positive number restarts it. A value
+    that AppConfig would reject leaves the interval alone.
+    """
+    if seconds is None:
+        return _REFRESH_INTERVAL_OFF_MS, True, None
+    try:
+        AppConfig(refresh_interval_seconds=seconds)
+    except ValidationError:
+        return dash.no_update, dash.no_update, dash.no_update
+    return int(float(seconds) * 1000), False, seconds
+
+
+@app.callback(
+    Output("cfg-yaml-block", "style"),
+    Output("cfg-yaml-output", "value"),
+    Input("cfg-yaml-btn", "n_clicks"),
+    State("cfg-signals", "data"),
+    State("cfg-time-window", "data"),
+    State("cfg-timebase-hz", "data"),
+    State("cfg-backend-options", "data"),
+    State("cfg-projection", "data"),
+    State("cfg-reference-shot-col", "data"),
+    prevent_initial_call=True,
+)
+def render_config_yaml(_n_clicks, signals, time_window, timebase, options, projection, reference):
+    """Show the applied settings as a config file.
+
+    The app never writes a config file: the settings live in this browser, and
+    a restart returns to the file. This is how a user keeps what they tuned.
+    """
+    return _SHOW, _settings_as_yaml(signals, time_window, timebase, options, projection, reference)
+
+
+@app.callback(
+    Output("cluster-labels", "data", allow_duplicate=True),
+    Output("cluster-representatives", "data", allow_duplicate=True),
+    Output("cluster-names", "data", allow_duplicate=True),
+    Output("centroid-data", "data", allow_duplicate=True),
+    Output("outlier-labels", "data", allow_duplicate=True),
+    Output("outlier-traces-data", "data", allow_duplicate=True),
+    Output("search-results", "data", allow_duplicate=True),
+    Output("search-traces-data", "data", allow_duplicate=True),
+    Output("lin-subject-shot", "data", allow_duplicate=True),
+    Output("lin-spark-seeded", "data", allow_duplicate=True),
+    Input("dataset-key", "data"),
+    prevent_initial_call=True,
+)
+def clear_results_on_new_dataset(_key):
+    """Drop the results that the previous projection produced.
+
+    A new key means every point has moved, so a cluster assignment, an outlier
+    label, a similar-shot list and a centroid are all answers to a question
+    about coordinates that no longer exist. Drawing them against the new
+    embedding would be wrong rather than merely stale.
+
+    ``selected-shot`` and ``active-filters`` are deliberately kept: both hold
+    shot ids, and the set of shots does not change with the projection.
+    """
+    return None, None, {}, None, None, None, None, None, None, None
 
 
 # ---------------------------------------------------------------------------

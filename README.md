@@ -86,6 +86,11 @@ Every option in `nice_shot/config.yaml` also has a CLI flag of the same name. An
 | `--timebase-hz HZ` | `uda.timebase_hz` |
 | `--projection-method {umap,pca}` | `projection_method` |
 | `--variable-column NAME` | `variable_column` |
+| `--n-components N` | `projection_options.n_components` |
+| `--random-state N` | `projection_options.random_state` |
+| `--n-neighbors N` | `projection_options.n_neighbors` |
+| `--min-dist F` | `projection_options.min_dist` |
+| `--metric NAME` | `projection_options.metric` |
 | `--umap-features COLUMN [COLUMN ...]` | `umap_features` |
 | `--umap-exclude-features COLUMN [COLUMN ...]` | `umap_exclude_features` |
 | `--reference-shot-col NAME` | `reference_shot_col` |
@@ -114,6 +119,11 @@ time_window:
 
 projection_method: umap # umap | pca
 
+projection_options:     # hyper-parameters of the projection
+  n_components: 2       # the plots draw the first two
+  n_neighbors: 15       # umap only
+  min_dist: 0.1         # umap only
+
 umap_features:          # omit to use all numeric columns
   - ip_max
   - ne_max
@@ -123,6 +133,8 @@ reference_shot_col: reference__number   # omit to hide the feature
 ```
 
 Any of these can be overridden for a single run with the matching CLI flag — see [Config-backed flags](#config-backed-flags) above.
+
+Most of them can also be changed while the app runs, from the **Configuration** tab. Those changes apply to your browser only, and a restart returns to the config file — see [Configuration tab](docs/configuration.md#configuration-tab).
 
 ---
 
