@@ -18,8 +18,9 @@ An interactive dashboard for exploring tokamak plasma shot data. Point it at a s
 - **Clustering** — run K-Means, DBSCAN, or Agglomerative clustering on any set of numeric columns. Results colour the scatter plots immediately; clusters can be given human-readable class names.
 - **Cluster centroid traces** — mean time-series per cluster, computed automatically after clustering and relabelled live as class names change.
 - **Outlier detection** — flag anomalous shots with Isolation Forest or Local Outlier Factor. Outliers are highlighted in red on the scatter plots and sample traces are loaded automatically.
-- **CSV export** — download the full data table with `cluster_id`, `cluster_name` columns appended when clustering has been run.
-- **SHAP decision plots** — per-shot feature attribution rendered inline (optional, requires `--shap-data`).
+- **Classification** — train a Gradient Boosting, Random Forest, or Gaussian Process model on a target column and any set of numeric features. Predicted labels colour the scatter plots, and an optional decision-surface background shows the predicted probability of a chosen class. See [`docs/classification.md`](docs/classification.md).
+- **CSV export** — download the full data table with `cluster_id`, `cluster_name` columns appended when clustering has been run, and `label` plus per-class probability columns when classification has been run.
+- **SHAP decision plots** — per-shot feature attribution rendered inline, for a supplied SHAP file or for a trained classifier (optional, requires `--shap-data` or a trained model).
 - **Reference graph** — overlay the full reference-shot lineage on any scatter plot (optional, requires `reference_shot_col` in config).
 - **Lineage changes** — see which variables changed between a shot and the shots before it in the same reference lineage. Shows a ranked summary of every variable, a colour-coded history table, a lineage tree, the operator's notes, and sparklines (optional, requires `reference_shot_col` in config).
 - **Semantic search** — find shots similar to a selected one via nearest-neighbour search in feature space. Results are highlighted on the scatter plots with gold ring markers.

@@ -405,7 +405,7 @@ A signal that the selected shot does not have is not an error. The pane plots th
 
 ### Results that a new projection replaces
 
-A change that rebuilds the projection moves every point. The app therefore clears the results that describe the old positions: the clusters, the outliers, the list of similar shots and the cluster centre traces. Calculate them again on the new projection.
+A change that rebuilds the projection moves every point. The app therefore clears the results that describe the old positions: the clusters, the outliers, the classification labels and model, the list of similar shots, and the cluster centre traces. Calculate them again on the new projection.
 
 The app keeps your selected shot and your filters. Both name shots, and the set of shots does not change.
 

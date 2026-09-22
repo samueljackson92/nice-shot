@@ -12,7 +12,8 @@ Point it at a shot-statistics file and it gives you:
 - **Clustering** — K-Means, DBSCAN, or Agglomerative on any numeric columns; results colour the scatter plots with user-defined class names
 - **Cluster centroid traces** — averaged time-series per cluster, updated live as class names change
 - **Outlier detection** — Isolation Forest or Local Outlier Factor; outliers highlighted on scatter plots with sample traces shown automatically
-- **SHAP decision plots** — per-shot feature attribution (optional)
+- **Classification** — Gradient Boosting, Random Forest, or Gaussian Process trained on a target column; results colour the scatter plots and can show a decision-surface background
+- **SHAP decision plots** — per-shot feature attribution, for a supplied SHAP file or for a trained classifier (optional)
 - **Reference graph** — reference-shot relationships overlaid on scatter plots (optional)
 - **Lineage changes** — which variables changed between a shot and the earlier shots in its reference lineage (optional)
 
@@ -25,6 +26,7 @@ Point it at a shot-statistics file and it gives you:
 - [Quickstart](quickstart.md) — install and run in five minutes
 - [Configuration](configuration.md) — full reference for `config.yaml` and CLI flags
 - [Data Formats](data-formats.md) — what shot data, projection, and SHAP files must look like
+- [Classification](classification.md) — training a supervised model on the shot table
 
 ---
 
