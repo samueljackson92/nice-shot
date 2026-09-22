@@ -238,13 +238,16 @@ class TestDecisionSurface:
     def test_grid_shape_and_range(self, points):
         xy, p = points
         grid = decision_surface(xy, p, resolution=16)
+        assert grid is not None
         assert len(grid["x"]) == 16
         assert len(grid["y"]) == 16
         assert len(grid["z"]) == 16 and all(len(row) == 16 for row in grid["z"])
 
     def test_probabilities_stay_in_range(self, points):
         xy, p = points
-        z = np.array(decision_surface(xy, p, resolution=16)["z"], dtype=float)
+        grid = decision_surface(xy, p, resolution=16)
+        assert grid is not None
+        z = np.array(grid["z"], dtype=float)
         finite = z[np.isfinite(z)]
         assert finite.size
         assert finite.min() >= 0.0 and finite.max() <= 1.0
@@ -252,6 +255,7 @@ class TestDecisionSurface:
     def test_the_boundary_falls_where_the_classes_meet(self, points):
         xy, p = points
         grid = decision_surface(xy, p, resolution=21, mask_dist=1.0)
+        assert grid is not None
         z = np.array(grid["z"], dtype=float)
         gx = np.array(grid["x"])
         # Left of x=0 is class 0, right of it is class 1.
@@ -262,7 +266,9 @@ class TestDecisionSurface:
         # Two tight blobs in opposite corners leave the middle unevidenced.
         xy = np.concatenate([np.zeros((20, 2)) + 0.01 * np.arange(20)[:, None], np.ones((20, 2))])
         p = np.concatenate([np.zeros(20), np.ones(20)])
-        z = np.array(decision_surface(xy, p, resolution=21, mask_dist=0.05)["z"], dtype=float)
+        grid = decision_surface(xy, p, resolution=21, mask_dist=0.05)
+        assert grid is not None
+        z = np.array(grid["z"], dtype=float)
         assert np.isnan(z).any()
 
     def test_too_few_points_returns_none(self):
@@ -291,6 +297,7 @@ class TestDecisionSurfaceOnLogAxes:
     def test_a_log_axis_is_sampled_evenly_in_log10(self, decades):
         xy, p = decades
         grid = decision_surface(xy, p, resolution=16, log_axes=(True, False))
+        assert grid is not None
         x = np.asarray(grid["x"])
         assert (x > 0).all()
         steps = np.diff(np.log10(x))
@@ -299,6 +306,7 @@ class TestDecisionSurfaceOnLogAxes:
     def test_the_other_axis_stays_linear(self, decades):
         xy, p = decades
         grid = decision_surface(xy, p, resolution=16, log_axes=(True, False))
+        assert grid is not None
         steps = np.diff(np.asarray(grid["y"]))
         assert np.allclose(steps, steps[0])
 
@@ -306,6 +314,7 @@ class TestDecisionSurfaceOnLogAxes:
         rng = np.random.default_rng(2)
         xy = 10.0 ** rng.uniform(0, 3, size=(60, 2))
         grid = decision_surface(xy, (xy[:, 0] > 30).astype(float), resolution=12, log_axes=(True, True))
+        assert grid is not None
         for axis in ("x", "y"):
             steps = np.diff(np.log10(np.asarray(grid[axis])))
             assert np.allclose(steps, steps[0])
@@ -314,6 +323,7 @@ class TestDecisionSurfaceOnLogAxes:
         """A linear grid over four decades would put almost every cell above 1000."""
         xy, p = decades
         grid = decision_surface(xy, p, resolution=41, log_axes=(True, False), mask_dist=1.0)
+        assert grid is not None
         z = np.array(grid["z"], dtype=float)
         x = np.asarray(grid["x"])
         assert np.nanmean(z[:, x < 10]) < 0.25
@@ -345,4 +355,6 @@ class TestDecisionSurfaceOnLogAxes:
         xy, p = decades
         linear = decision_surface(xy, p, resolution=16)
         logged = decision_surface(xy, p, resolution=16, log_axes=(True, False))
+        assert linear is not None
+        assert logged is not None
         assert not np.allclose(np.asarray(linear["x"]), np.asarray(logged["x"]))
