@@ -22,7 +22,6 @@ import dash
 import numpy as np
 import pandas as pd
 import pytest
-from conftest import _walk as _walk_components
 from conftest import find_tab, layout_of
 
 
@@ -57,7 +56,6 @@ def test_update_umap_returns_figure_with_expected_points(app_module):
         None,  # color_col
         None,  # active_filters
         None,  # selected_shot
-        False,  # ref_graph_enabled
         None,  # cluster_labels
         None,  # cluster_names
         None,  # outlier_labels
@@ -545,15 +543,6 @@ def test_lineage_callbacks_are_registered_without_a_reference_column(app_module)
     after the app starts serving."""
     assert hasattr(app_module, "update_lineage_history")
     assert hasattr(app_module, "update_lineage_cards")
-    assert hasattr(app_module, "toggle_ref_graph")
-
-
-def test_reference_toggle_button_is_hidden_without_a_reference_column(app_module):
-    """Present so its callback has a target, hidden so it cannot be clicked."""
-    button = next(
-        node for node in _walk_components(layout_of(app_module)) if getattr(node, "id", None) == "ref-toggle-btn"
-    )
-    assert button.style.get("display") == "none"
 
 
 def test_lineage_tab_children_is_buildable_without_a_reference_column(app_module):
@@ -1295,7 +1284,6 @@ def test_the_pair_plot_draws_the_surface_behind_the_points(classify_module):
         "linear",  # y_scale
         None,  # active_filters
         None,  # selected_shot
-        False,  # ref_graph_enabled
         None,  # cluster_labels
         None,  # cluster_names
         None,  # outlier_labels
@@ -1326,7 +1314,6 @@ def _pair_with_scales(module, labels, proba, model, x_scale, y_scale, x_col="ip_
         y_scale,
         None,
         None,
-        False,
         None,
         None,
         None,
@@ -1392,7 +1379,6 @@ def test_turning_the_surface_off_leaves_only_the_points(classify_module):
         classify_module._CLASS_COLOR_VALUE,
         None,
         None,
-        False,
         None,
         None,
         None,
@@ -1456,7 +1442,6 @@ def _umap_with(module, labels, proba, model, active_filters):
         module._CLASS_COLOR_VALUE,
         active_filters,
         None,
-        False,
         None,
         None,
         None,

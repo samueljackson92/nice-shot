@@ -2,8 +2,8 @@
 
 Dash registers callbacks once, at import, and cannot add one afterwards. The
 Lineage tab's callbacks therefore have to exist whether or not a reference
-column is configured, and the tab and the reference-graph toggle have to stay
-in the layout so those callbacks always have somewhere to write.
+column is configured, and the tab has to stay in the layout so those
+callbacks always have somewhere to write.
 
 This file pins both halves: the feature is off but intact at startup, and it
 comes on when the column is applied, with no restart.
@@ -32,9 +32,8 @@ def test_the_column_exists_in_the_data_but_is_not_configured(unset_ref_app):
 
 
 def test_the_feature_is_off_at_startup(unset_ref_app):
-    disabled, style = unset_ref_app.update_reference_feature_visibility(None)
+    disabled = unset_ref_app.update_reference_feature_visibility(None)
     assert disabled is True
-    assert style.get("display") == "none"
 
 
 def test_the_lineage_tab_is_present_but_disabled_at_startup(unset_ref_app):
@@ -71,9 +70,8 @@ def test_applying_the_column_builds_the_reference_graph(unset_ref_app):
 
 def test_applying_the_column_turns_the_feature_on(unset_ref_app):
     """The whole point: no restart."""
-    disabled, style = unset_ref_app.update_reference_feature_visibility(_applied_key(unset_ref_app))
+    disabled = unset_ref_app.update_reference_feature_visibility(_applied_key(unset_ref_app))
     assert disabled is False
-    assert style.get("display") != "none"
 
 
 def test_lineage_resolves_once_the_column_is_applied(unset_ref_app):
@@ -86,7 +84,7 @@ def test_lineage_resolves_once_the_column_is_applied(unset_ref_app):
 
 def test_clearing_the_column_turns_the_feature_off_again(unset_ref_app):
     cleared = unset_ref_app._dataset_key_from_stores(None, None, {"value": None}).to_store()
-    disabled, _style = unset_ref_app.update_reference_feature_visibility(cleared)
+    disabled = unset_ref_app.update_reference_feature_visibility(cleared)
     assert disabled is True
 
 

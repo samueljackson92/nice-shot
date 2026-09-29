@@ -48,4 +48,4 @@ uda:
 # Changing this list forces the UMAP cache to be recomputed.
 # Shots with NaN in any of these columns are excluded from the projection.
 #
-reference_shot_col: reference
+reference_shot_col: reference_shot

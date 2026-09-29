@@ -56,7 +56,6 @@ from nice_shot.analysis import (
     column_stds,
     compute_active_filter_ids,
     decision_surface,
-    get_reference_graph,
     get_reference_lineage,
     is_projection_col,
     lineage_change_matrix,
@@ -1788,84 +1787,6 @@ def _ref_shot_color(shot_id: int, min_id: int, max_id: int) -> str:
     return pc.sample_colorscale("Turbo", [t])[0]
 
 
-def _add_reference_graph_overlay(
-    fig: go.Figure,
-    ds: Dataset,
-    plot_df: pd.DataFrame,
-    x_col: str,
-    y_col: str,
-    selected_shot: int,
-) -> go.Figure:
-    """Add edge lines and node markers for the reference graph of selected_shot.
-
-    Nodes and edges are coloured by shot_id along the Turbo scale so the
-    temporal ordering is immediately visible (old = dark purple, new = yellow).
-    """
-    graph = get_reference_graph(ds.ref_adjacency, selected_shot)
-    if len(graph) <= 1:
-        return fig
-
-    # Position lookup — only shots visible in plot_df
-    pos = {int(r["shot_id"]): (r[x_col], r[y_col]) for _, r in plot_df[plot_df["shot_id"].isin(graph)].iterrows()}
-
-    visible = set(pos.keys())
-    if not visible:
-        return fig
-
-    min_id = min(visible)
-    max_id = max(visible)
-
-    # -- Nodes (all connected shots except the primary selection) --
-    related = graph - {selected_shot}
-    rel_df = plot_df[plot_df["shot_id"].isin(related)]
-    if not rel_df.empty:
-        node_colors = [_ref_shot_color(int(s), min_id, max_id) for s in rel_df["shot_id"]]
-        fig.add_trace(
-            go.Scatter(
-                x=rel_df[x_col],
-                y=rel_df[y_col],
-                mode="markers",
-                marker=dict(
-                    size=11,
-                    color=node_colors,
-                    line=dict(color="rgba(0,0,0,0.4)", width=1),
-                    symbol="circle",
-                ),
-                customdata=rel_df[["shot_id"]].values,
-                hovertemplate="ref: %{customdata[0]}<extra></extra>",
-                showlegend=False,
-                name="_ref_nodes",
-            )
-        )
-
-    # -- Edges — one trace per edge so each can carry its own colour --
-    seen_edges: set[frozenset] = set()
-    for shot, ref in ds.ref_parent.items():
-        if shot not in graph or ref not in graph:
-            continue
-        edge = frozenset((shot, ref))
-        if edge in seen_edges:
-            continue
-        seen_edges.add(edge)
-        if shot not in pos or ref not in pos:
-            continue
-        # Colour by the older (smaller) shot id in the pair
-        color = _ref_shot_color(min(shot, ref), min_id, max_id)
-        fig.add_trace(
-            go.Scatter(
-                x=[pos[shot][0], pos[ref][0]],
-                y=[pos[shot][1], pos[ref][1]],
-                mode="lines",
-                line=dict(color=color, width=2, dash="dot"),
-                showlegend=False,
-                hoverinfo="skip",
-                name="_ref_edge",
-            )
-        )
-
-    return fig
-
-
 # ---------------------------------------------------------------------------
 # App layout
 # ---------------------------------------------------------------------------
@@ -1903,18 +1824,6 @@ _SHOW: dict[str, str] = {}
 _HIDE = {"display": "none"}
 
 _BTN_STYLE_SECONDARY = dict(_BTN_STYLE, backgroundColor="#2a2a4a", color=TEXT)
-
-# The reference-graph toggle in the left panel. Named because the button is now
-# always rendered and a callback has to restore this style when it un-hides it.
-_REF_TOGGLE_STYLE = dict(
-    backgroundColor="#2a2a4a",
-    color="#888",
-    border="1px solid #3a3a6a",
-    padding="4px 12px",
-    cursor="pointer",
-    borderRadius="4px",
-    fontSize="11px",
-)
 
 _CLUSTER_LABEL_STYLE = dict(fontSize="10px", color="#888", display="block", marginBottom="2px")
 _CLUSTER_INPUT_STYLE = dict(
@@ -3784,7 +3693,6 @@ app.layout = html.Div(
         dcc.Store(id="selected-shot"),
         dcc.Store(id="_table_scroll_sink"),
         dcc.Store(id="_table_repaint_sink"),
-        dcc.Store(id="ref-graph-enabled", data=False),
         # Subject shot for the Lineage tab: the selected shot, or the latest
         # shot when nothing is selected. Resolved centrally so every Lineage
         # view agrees, and declared unconditionally so the callback that
@@ -3963,22 +3871,6 @@ app.layout = html.Div(
                         html.Div(
                             style=dict(display="flex", gap="8px", flexWrap="wrap"),
                             children=[
-                                # Always in the tree, hidden when there is no
-                                # reference column. Its callbacks are registered
-                                # once at import and cannot be added later, so
-                                # removing the button would leave them pointing
-                                # at an id that does not exist -- and the
-                                # Configuration tab can turn this feature on
-                                # while the app runs.
-                                html.Button(
-                                    "Reference graph: OFF",
-                                    id="ref-toggle-btn",
-                                    n_clicks=0,
-                                    style=dict(
-                                        _REF_TOGGLE_STYLE,
-                                        **({} if SHOW_REF_TOGGLE else _HIDE),
-                                    ),
-                                ),
                                 html.Button(
                                     "Similar shots: ON",
                                     id="search-highlight-btn",
@@ -6018,48 +5910,6 @@ def clear_filters(_, _row_clicks):
 
 
 @app.callback(
-    Output("ref-graph-enabled", "data"),
-    Output("ref-toggle-btn", "children"),
-    # Shared with update_reference_feature_visibility, which decides whether
-    # the button is shown at all. That one has to run on page load, so this
-    # one carries the duplicate flag -- allow_duplicate needs
-    # prevent_initial_call, which only this callback can have.
-    Output("ref-toggle-btn", "style", allow_duplicate=True),
-    Input("ref-toggle-btn", "n_clicks"),
-    State("ref-graph-enabled", "data"),
-    prevent_initial_call=True,
-)
-def toggle_ref_graph(n_clicks, currently_enabled):
-    enabled = not currently_enabled
-    if enabled:
-        label = "Reference graph: ON"
-        style = dict(
-            alignSelf="flex-start",
-            backgroundColor="#1a3a6a",
-            color=ACCENT,
-            border=f"1px solid {ACCENT}",
-            padding="4px 12px",
-            cursor="pointer",
-            borderRadius="4px",
-            fontSize="11px",
-            fontWeight="600",
-        )
-    else:
-        label = "Reference graph: OFF"
-        style = dict(
-            alignSelf="flex-start",
-            backgroundColor="#2a2a4a",
-            color="#888",
-            border="1px solid #3a3a6a",
-            padding="4px 12px",
-            cursor="pointer",
-            borderRadius="4px",
-            fontSize="11px",
-        )
-    return enabled, label, style
-
-
-@app.callback(
     Output("search-highlight-enabled", "data"),
     Output("search-highlight-btn", "children"),
     Output("search-highlight-btn", "style"),
@@ -6165,7 +6015,6 @@ def update_latest_shot(_dataset_version, variable):
     Input("umap-color-col", "value"),
     Input("active-filters", "data"),
     Input("selected-shot", "data"),
-    Input("ref-graph-enabled", "data"),
     Input("cluster-labels", "data"),
     Input("cluster-names", "data"),
     Input("outlier-labels", "data"),
@@ -6185,7 +6034,6 @@ def update_umap(
     color_col,
     active_filters,
     selected_shot,
-    ref_graph_enabled,
     cluster_labels,
     cluster_names,
     outlier_labels,
@@ -6228,8 +6076,6 @@ def update_umap(
         selector=dict(type="scatter"),
     )
     fig.update_layout(**_SCATTER_LAYOUT, uirevision="umap")
-    if ref_graph_enabled and selected_shot is not None:
-        _add_reference_graph_overlay(fig, ds, plot_df, "umap_x", "umap_y", selected_shot)
     if search_highlight_enabled:
         _add_search_highlight(fig, plot_df, "umap_x", "umap_y", search_results)
     _add_latest_shot_highlight(fig, plot_df, "umap_x", "umap_y", latest_shot, latest_shot_highlight_enabled)
@@ -6246,7 +6092,6 @@ def update_umap(
     Input("pair-y-scale", "value"),
     Input("active-filters", "data"),
     Input("selected-shot", "data"),
-    Input("ref-graph-enabled", "data"),
     Input("cluster-labels", "data"),
     Input("cluster-names", "data"),
     Input("outlier-labels", "data"),
@@ -6270,7 +6115,6 @@ def update_pair_plot(
     y_scale,
     active_filters,
     selected_shot,
-    ref_graph_enabled,
     cluster_labels,
     cluster_names,
     outlier_labels,
@@ -6326,8 +6170,6 @@ def update_pair_plot(
         xaxis_type=x_scale,
         yaxis_type=y_scale,
     )
-    if ref_graph_enabled and selected_shot is not None:
-        _add_reference_graph_overlay(fig, ds, plot_df, x_col, y_col, selected_shot)
     if search_highlight_enabled:
         _add_search_highlight(fig, plot_df, x_col, y_col, search_results)
     _add_latest_shot_highlight(fig, plot_df, x_col, y_col, latest_shot, latest_shot_highlight_enabled)
@@ -7242,8 +7084,7 @@ def update_correlation(features, active_filters, variable):
 
 
 # ---------------------------------------------------------------------------
-# Lineage tab callbacks — registered only when a reference column exists,
-# exactly like toggle_ref_graph above.
+# Lineage tab callbacks — registered only when a reference column exists.
 # ---------------------------------------------------------------------------
 
 
@@ -7827,22 +7668,20 @@ def render_search_traces(search_traces_data, cfg_signals):
 
 @app.callback(
     Output("lineage-tab", "disabled"),
-    Output("ref-toggle-btn", "style"),
     Input("dataset-key", "data"),
 )
 def update_reference_feature_visibility(key):
-    """Show or hide the Lineage tab and the reference-graph toggle.
+    """Show or hide the Lineage tab.
 
-    Both are always in the layout, so this only changes whether they are
-    visible: the tab carries a ``disabled_style`` that hides it, so setting
-    ``disabled`` takes it out of the tab bar. That is what lets the
-    Configuration tab switch the feature on without a restart: a callback
-    cannot be registered after the app starts, but a ``disabled`` flag and a
-    style can be written at any time.
+    Always in the layout, so this only changes whether it is visible: the tab
+    carries a ``disabled_style`` that hides it, so setting ``disabled`` takes
+    it out of the tab bar. That is what lets the Configuration tab switch the
+    feature on without a restart: a callback cannot be registered after the
+    app starts, but a ``disabled`` flag can be written at any time.
     """
     ds = get_dataset(key)
     available = bool(ds is not None and ds.ref_adjacency)
-    return not available, dict(_REF_TOGGLE_STYLE, **({} if available else _HIDE))
+    return not available
 
 
 @app.callback(
