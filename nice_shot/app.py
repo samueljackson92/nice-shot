@@ -752,7 +752,10 @@ def _finalize_dataset(
     feature_cols = [c for c in _numeric_cols_of(data) if not is_projection_col(c)]
     search_cols = [f for f in (umap_features or feature_cols) if f in data.columns]
     search_raw = data[["shot_id"] + search_cols].copy()
-    search_raw[search_cols] = search_raw[search_cols].replace([np.inf, -np.inf], np.nan)
+    # astype("float64") converts any numpy-nullable columns (Int64/Float64,
+    # which use pd.NA) to plain numpy floats with NaN -- pd.NA can't be cast
+    # with float(), which .values.astype(float) below would otherwise hit.
+    search_raw[search_cols] = search_raw[search_cols].astype("float64").replace([np.inf, -np.inf], np.nan)
     # Impute with column means so every shot is searchable, even those with missing features.
     search_X = StandardScaler().fit_transform(
         SimpleImputer(strategy="mean").fit_transform(search_raw[search_cols].values.astype(float))

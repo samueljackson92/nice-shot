@@ -59,6 +59,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from pandas.core.arrays.masked import BaseMaskedDtype
 
 log = logging.getLogger(__name__)
 
@@ -173,6 +174,17 @@ class ShotDataBackend(ABC):
             if converted:
                 log.info("Coerced %d object column(s) to numeric: %s", len(converted), converted)
                 df[converted] = coerced[converted]
+
+        # Parquet files can embed pandas' own schema metadata, which restores
+        # nullable numpy-masked dtypes (Int64, Float64, boolean, ...) on read
+        # instead of plain numpy ones. Those use pd.NA for missing values, and
+        # every numeric code path downstream (imputers, .values.astype(float),
+        # etc.) expects plain numpy dtypes with np.nan -- pd.NA can't be cast
+        # with float(). Convert eagerly here so no other code has to know.
+        masked_cols = [c for c in df.columns if isinstance(df[c].dtype, BaseMaskedDtype) and df[c].dtype.kind != "b"]
+        if masked_cols:
+            log.info("Converting %d numpy-nullable column(s) to float64: %s", len(masked_cols), masked_cols)
+            df[masked_cols] = df[masked_cols].astype("float64")
 
         shot_col = detect_shot_col(df)
         if shot_col != "shot_id":

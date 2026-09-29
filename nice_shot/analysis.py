@@ -157,7 +157,10 @@ def _fit_projection(
         )
 
     # Coerce to float and replace ±inf with NaN so the imputer can handle them.
-    X = X.apply(pd.to_numeric, errors="coerce")
+    # astype("float64") (rather than the numpy-nullable dtype pd.to_numeric may
+    # keep, e.g. Int64/Float64 with pd.NA) so X.values below is a plain numpy
+    # array -- pd.NA can't be cast with float().
+    X = X.apply(pd.to_numeric, errors="coerce").astype("float64")
     X = X.replace([np.inf, -np.inf], np.nan)
 
     # Report columns that have any missing values (informational only — they are imputed, not dropped).
