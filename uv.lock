@@ -1533,7 +1533,7 @@ wheels = [
 
 [[package]]
 name = "nice-shot"
-version = "1.1.2"
+version = "1.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "dash" },
