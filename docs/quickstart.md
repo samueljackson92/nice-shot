@@ -6,10 +6,28 @@
 pip install nice-shot
 ```
 
-With optional extras (SHAP plots, xarray, matplotlib):
+To also get SHAP decision plots, install the `shap` extra:
 
 ```sh
 pip install "nice-shot[shap]"
+```
+
+The `sal` trace backend also needs `sal-xarray`. Install it separately.
+
+### Install on Friea
+
+We do not recommend that you run NiceShot! on Friea. If you must run it on the Friea cluster, load the Python 3.12 mini bundle first:
+
+```sh
+module unload python
+module load python/3.12-minibundle
+pip install nice-shot
+```
+
+Then run it with:
+
+```sh
+~/.local/bin/nice-shot path/to/shot_stats.parquet
 ```
 
 ---
@@ -22,13 +40,13 @@ nice-shot path/to/shot_stats.parquet
 
 `SHOT_DATA` is the only required argument. Open `http://localhost:8050` in a browser.
 
-By default `nice-shot` starts a **gunicorn** server with 4 worker processes, suitable for multiple concurrent users. The first run computes and caches the UMAP/PCA projection in the master process before workers are forked; subsequent starts are instant.
+By default, `nice-shot` starts a **gunicorn** server with 4 worker processes. This lets many users use the app at the same time. At the first start, the main process calculates the UMAP or PCA projection and keeps it in a cache before it starts the workers. The next starts are immediate.
 
----
+If the time-trace directory (`--data-dir`) does not exist or is empty, the app hides the time-trace panel. All the other tabs operate.
 
-## Development mode
+### Development mode
 
-For local development with Dash hot-reload use `--debug`. This starts the single-process Flask dev server instead of gunicorn:
+For local development with Dash hot-reload, use `--debug`. This starts the single-process Flask development server instead of gunicorn:
 
 ```sh
 nice-shot path/to/shot_stats.parquet --debug
@@ -36,21 +54,9 @@ nice-shot path/to/shot_stats.parquet --debug
 
 ---
 
-## Minimal example
+## Add per-shot time traces (parquet backend)
 
-If you have a single parquet file of shot statistics and nothing else:
-
-```sh
-nice-shot outputs/shot_stats.parquet
-```
-
-The time-trace panel is hidden automatically when `--data-dir` does not exist or is empty.
-
----
-
-## With per-shot time traces (parquet backend)
-
-Lay out per-shot files under a directory:
+Put one file for each shot in a directory:
 
 ```
 data/mastu/
@@ -60,7 +66,7 @@ data/mastu/
     ...
 ```
 
-Each file must have a `time` column and one column per signal. Then:
+Each file must have a `time` column and one column for each signal. Then:
 
 ```sh
 nice-shot outputs/shot_stats.parquet \
@@ -68,245 +74,36 @@ nice-shot outputs/shot_stats.parquet \
   --config configs/config_mastu.yml
 ```
 
+For the other trace backends (UDA, SAL, PostgreSQL and FAIR MAST), refer to [`backend`](configuration.md#backend).
+
 ---
 
-## With a pre-computed projection
+## Use a pre-computed projection
 
-Skip UMAP computation entirely by supplying your own 2-D embedding:
+To use your own 2-D embedding instead of UMAP or PCA:
 
 ```sh
 nice-shot outputs/shot_stats.parquet \
   --projection outputs/my_embedding.parquet
 ```
 
-See [Data Formats](data-formats.md) for accepted shapes.
+Refer to [Projection files](data-formats.md#projection-files-projection) for the accepted formats.
 
 ---
 
-## Clustering shots
-
-The **Clustering** tab (lower-left panel) lets you group shots by their statistics without any pre-processing.
-
-### Workflow
-
-1. **Choose an algorithm** — K-Means, DBSCAN, or Agglomerative.
-2. **Select feature columns** — defaults to the same columns used for the projection. Pick any subset of numeric columns from the shot statistics file.
-3. **Set parameters**:
-   - `n_clusters` — number of clusters (K-Means / Agglomerative).
-   - `eps` / `min_samples` — neighbourhood radius and density threshold (DBSCAN).
-4. **Click "Run clustering"** — the Projection scatter switches to cluster colours automatically.
-5. **Label your clusters** — type a class name next to each cluster; the scatter legend and centroid traces update immediately.
-
-### Cluster centroid traces
-
-After clustering the **Cluster Traces** tab (upper-left) shows the mean time-series for every shot in each cluster, with one coloured line per cluster. The traces are computed automatically on each run and re-labelled live as you edit class names. The button "Compute centroid traces" can be used to re-trigger computation manually if needed.
-
-> Centroid traces require `--data-dir` (parquet backend) or a UDA/SAL backend. The tab is still visible without traces configured but will show a placeholder.
-
-### Exporting with cluster labels
-
-The **Data Table** tab has a **Download CSV** button. When clustering has been run the exported file includes two extra columns:
-
-| Column | Description |
-|--------|-------------|
-| `cluster_id` | Integer cluster index (`-1` = DBSCAN noise) |
-| `cluster_name` | Human-readable label entered in the Clustering tab, or `Cluster N` if not set |
-
----
-
-## Detecting outliers
-
-The **Outlier Detection** tab (lower-left panel, next to Clustering) flags anomalous shots using scikit-learn anomaly detectors.
-
-### Workflow
-
-1. **Choose an algorithm** — Isolation Forest or Local Outlier Factor.
-2. **Select feature columns** — defaults to the projection features.
-3. **Set parameters**:
-   - `contamination` — expected proportion of outliers (0.01–0.5, both algorithms).
-   - `n_neighbors` — neighbourhood size for Local Outlier Factor only.
-4. **Click "Run outlier detection"** — both scatter plots switch to an Outlier/Inlier colour scheme (red = outlier, blue = inlier).
-
-### Outlier sample traces
-
-The **Outlier Traces** tab (upper-left, next to Cluster Traces) automatically loads time traces for up to 5 outlier shots after each run, overlaid as individual coloured lines labelled by shot ID.
-
-> Requires `--data-dir` or a UDA/SAL backend. Shows a placeholder if no time-trace backend is configured.
-
----
-
-## Correlation heatmap
-
-The **Correlation** tab (right panel, next to Data Table) shows a Pearson correlation matrix for any set of numeric columns.
-
-- **Feature selector** — defaults to the same columns used for the projection (`umap_features`). Change the selection to explore different subsets.
-- The heatmap updates whenever the feature selection or active filters change, so it always reflects the currently visible shots.
-- Colour scale runs from −1 (dark red) through 0 (white) to +1 (dark blue). Each cell is annotated with the `r` value.
-
----
-
-## Reference lineage changes
-
-Set `reference_shot_col` in the config to the column that holds each shot's reference (parent) shot ID:
-
-```sh
-nice-shot shot_stats.parquet --reference-shot-col reference__number
-```
-
-The **Lineage** tab then appears in the right panel. It answers two questions about a shot: what changed against its reference shot, and what the earlier shots in the same lineage tried.
-
-- **Summary card** — all the variables in the table, largest change first, with the old value, the new value and the size of the change. Scroll the card to see them all. Use the **Rank by** control to sort by the z-scored change or by the percentage change. The percentage choice also gives the change in the units of the variable.
-- **History table** — one row for each shot in the lineage, newest first. Cells are coloured by the change from the previous shot. Red is an increase, blue a decrease. The text stays the raw value; point at a cell to see the change.
-- **Lineage control** — the ancestor chain (default), every connected shot, or the shots that share the same reference.
-- **Colour control** — the change divided by the column spread (default), the percent change, or the absolute change. The default makes colours comparable between variables with different units.
-- **More views** — the operator's notes per shot, a tree of the reference links (click a node to select that shot), and sparklines for the variables you select (the summary card's first 12 by default).
-
-The tab starts with all the projection features as its selection, because these are the variables that put each shot where it is on the scatter plot. The tab keeps your own selection when you click a different shot. Column filters do not change the lineage, because hiding a shot would make the change values compare two shots that are not linked.
-
-See [`reference_shot_col`](configuration.md#reference_shot_col) for the full reference.
-
----
-
-## With SHAP values
+## Add SHAP values
 
 ```sh
 nice-shot outputs/shot_stats.parquet \
   --shap-data outputs/shap_values.nc
 ```
 
-A **SHAP** tab appears in the left panel. Click any point to see its decision plot.
+Click a point to see its decision plot in the **SHAP** tab. Refer to [SHAP](dashboard.md#shap).
 
 ---
 
-## Semantic shot search
+## Next steps
 
-The **Search** tab (right pane) lets you find shots similar to a selected one using nearest-neighbour search in feature space.
-
-1. Click a shot on the scatter plot — the search runs automatically. Or type a shot ID directly and click **"Find similar shots"**.
-2. Set **K** — how many similar shots to return (default: 10).
-3. Optionally adjust the **features** used for similarity (defaults to the same columns as the projection).
-
-Results appear as gold ring markers on the Projection and Pairwise Scatter plots, fading from bright (most similar) to dim (least similar). A ranked table with distance scores and time traces for the similar shots are shown in the tab. Use the **"Similar shots: ON/OFF"** toggle in the left panel to hide the markers without clearing the results.
-
----
-
-## Custom backends
-
-NiceShot! uses a registry/factory system so you can add support for new data sources without modifying the app code. Two extension points are available:
-
-- **`TraceBackend`** — how per-shot time-series are loaded (new instrument backends, custom file formats, remote APIs, etc.)
-- **`ShotDataBackend`** — how the shot-statistics table is loaded (new file formats such as HDF5, Zarr, databases, etc.)
-
-### Writing a custom trace backend
-
-```python
-# my_package/my_backends.py
-import pandas as pd
-from nice_shot.backends import BackendConfig, TraceBackend, register_trace_backend
-
-class MdsTraceBackend(TraceBackend):
-    def __init__(self, config: BackendConfig) -> None:
-        super().__init__(config)
-        self._server = config.options.get("server", "localhost")
-
-    def load(self, shot_id: int) -> pd.DataFrame | None:
-        # fetch data for shot_id and return a DataFrame with a
-        # 'time' column and one column per signal, or None
-        ...
-
-    def is_available(self) -> bool:
-        return True  # or check connectivity
-
-register_trace_backend("mds", MdsTraceBackend)
-```
-
-Then in `config.yaml`:
-
-```yaml
-backend: mds
-
-plugins:
-  - my_package.my_backends
-
-backend_options:
-  server: "mds.mylab.ac.uk"
-```
-
-### Writing a custom shot data backend
-
-```python
-# my_package/my_backends.py
-import pandas as pd
-from nice_shot.backends import BackendConfig, ShotDataBackend, register_shot_data_backend
-
-class HDF5ShotDataBackend(ShotDataBackend):
-    def load(self, path: str) -> pd.DataFrame:
-        import h5py
-        # load from HDF5 and return a normalised DataFrame
-        # (must have a 'shot_id' column — call self._prepare(df) to auto-detect)
-        ...
-
-register_shot_data_backend(".h5", HDF5ShotDataBackend)
-register_shot_data_backend(".hdf5", HDF5ShotDataBackend)
-```
-
-The backend is selected automatically from the file extension of `SHOT_DATA`.
-
-### Plugin loading order
-
-Plugins listed under `plugins:` are imported in order before the backends are instantiated, so all `register_*` calls take effect in time.
-
----
-
-## CLI reference
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `SHOT_DATA` | — (required) | Shot statistics file (`.csv` or `.parquet`) |
-| `--config PATH` | `nice_shot/config.yaml` | Path to YAML config file |
-| `--data-dir PATH` | `data/mastu/` | Directory of per-shot files for the parquet backend |
-| `--projection PATH` | _(none)_ | Pre-computed 2-D embedding (skips UMAP/PCA) |
-| `--shap-data PATH` | _(none)_ | SHAP values NetCDF file |
-| `--umap-cache PATH` | platform cache dir | Where to read/write the projection cache |
-| `--host HOST` | `0.0.0.0` | Bind address |
-| `--port PORT` | `8050` | Port |
-| `--workers N` | `4` | Gunicorn worker processes (production mode only) |
-| `--debug / --no-debug` | off | Use Flask dev server instead of gunicorn |
-
-Every field in `nice_shot/config.yaml` also has a matching CLI flag — an explicit CLI value overrides the config file, which overrides the built-in default:
-
-| Flag | Config field | Default |
-|------|--------------|---------|
-| `--backend NAME` | `backend` | `parquet` |
-| `--signals SIGNAL [SIGNAL ...]` | `signals` | `ip ne dalpha loopv plasma_energy` |
-| `--min-time SECONDS` | `time_window.min_time` | `0.0` |
-| `--max-time SECONDS` | `time_window.max_time` | `1.0` |
-| `--timebase-hz HZ` | `uda.timebase_hz` | _(none)_ |
-| `--projection-method {umap,pca}` | `projection_method` | `umap` |
-| `--n-components N` | `projection_options.n_components` | `2` |
-| `--random-state N` | `projection_options.random_state` | `42` |
-| `--n-neighbors N` | `projection_options.n_neighbors` | `15` |
-| `--min-dist F` | `projection_options.min_dist` | `0.1` |
-| `--metric NAME` | `projection_options.metric` | `euclidean` |
-| `--variable-column NAME` | `variable_column` | _(none)_ |
-| `--umap-features COLUMN [COLUMN ...]` | `umap_features` | _(all numeric columns)_ |
-| `--umap-exclude-features COLUMN [COLUMN ...]` | `umap_exclude_features` | _(none)_ |
-| `--reference-shot-col NAME` | `reference_shot_col` | _(none)_ |
-| `--plugins MODULE [MODULE ...]` | `plugins` | _(none)_ |
-| `--backend-option KEY=VALUE` (repeatable) | `backend_options` | _(none)_ |
-
-## Friea Installation
-
-Running this software on Friea is generally not recommended. However, if you really wish to run the software on the Friea cluster you need select the python 3.12 mini bundle first:
-
-```sh
-module unload python
-module load python/3.12-minibundle
-pip install nice-shot
-```
-
-Then run with:
-
-```sh
-~/.local/bin/nice-shot 
-```
+- [Using the Dashboard](dashboard.md) — what each tab does.
+- [Configuration](configuration.md) — all the settings and command-line flags.
+- [Data Formats](data-formats.md) — the layout of each input file.

@@ -19,7 +19,7 @@
       
       
       <link rel="icon" href="./assets/images/favicon.png">
-      <meta name="generator" content="zensical-0.0.43">
+      <meta name="generator" content="zensical-0.0.45">
     
     
       
@@ -295,6 +295,58 @@
   
   
     <li class="md-nav__item">
+      <a href="./dashboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Using the Dashboard
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./classification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Classification
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="./configuration/" class="md-nav__link">
         
   
@@ -329,6 +381,32 @@
     
   
   Data Formats
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./custom-backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Custom Backends
 
     
   </span>
@@ -422,29 +500,37 @@
 <p>Point it at a shot-statistics file and it gives you:</p>
 <ul>
 <li><strong>Projection view</strong> — UMAP or PCA scatter of every shot, coloured by any column</li>
-<li><strong>Pairwise scatter</strong> — any two numeric columns plotted against each other</li>
+<li><strong>Pairwise scatter</strong> — any two numeric columns plotted against each other, with linear or log axes</li>
 <li><strong>Correlation</strong> — Pearson correlation heatmap for any selection of numeric columns</li>
 <li><strong>Data table</strong> — sortable, searchable shot records with CSV export</li>
-<li><strong>Time traces</strong> — per-shot signal traces loaded on click (parquet, UDA, or SAL backends)</li>
+<li><strong>Filters</strong> — up to six column filters, combined with AND or OR</li>
+<li><strong>Time traces</strong> — per-shot signal traces loaded on click (parquet, UDA, SAL, PostgreSQL or FAIR MAST backends)</li>
 <li><strong>Clustering</strong> — K-Means, DBSCAN, or Agglomerative on any numeric columns; results colour the scatter plots with user-defined class names</li>
 <li><strong>Cluster centroid traces</strong> — averaged time-series per cluster, updated live as class names change</li>
 <li><strong>Outlier detection</strong> — Isolation Forest or Local Outlier Factor; outliers highlighted on scatter plots with sample traces shown automatically</li>
-<li><strong>SHAP decision plots</strong> — per-shot feature attribution (optional)</li>
-<li><strong>Reference graph</strong> — reference-shot relationships overlaid on scatter plots (optional)</li>
+<li><strong>Classification</strong> — Gradient Boosting, Random Forest, or Gaussian Process trained on a target column; results colour the scatter plots and can show a decision-surface background</li>
+<li><strong>SHAP decision plots</strong> — per-shot feature attribution, for a supplied SHAP file or for a trained classifier (optional)</li>
+<li><strong>Similar-shot search</strong> — nearest-neighbour search for the shots most similar to a selected shot</li>
+<li><strong>Lineage changes</strong> — which variables changed between a shot and the earlier shots in its reference lineage (optional)</li>
+<li><strong>Live configuration</strong> — change most settings from the Configuration tab while the app runs</li>
+<li><strong>Live updates</strong> — poll the data source for new shots (optional)</li>
 </ul>
 <p><img alt="NiceShot! dashboard" src="assets/ui.png" /></p>
 <hr />
 <h2 id="contents">Contents<a class="headerlink" href="#contents" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="quickstart/">Quickstart</a> — install and run in five minutes</li>
-<li><a href="configuration/">Configuration</a> — full reference for <code>config.yaml</code> and CLI flags</li>
+<li><a href="dashboard/">Using the Dashboard</a> — what each tab does</li>
+<li><a href="classification/">Classification</a> — train a supervised model on the shot table</li>
+<li><a href="configuration/">Configuration</a> — full reference for <code>config.yaml</code> and the command-line flags</li>
 <li><a href="data-formats/">Data Formats</a> — what shot data, projection, and SHAP files must look like</li>
+<li><a href="custom-backends/">Custom Backends</a> — add a new data source with a plugin</li>
 </ul>
 <hr />
 <h2 id="requirements">Requirements<a class="headerlink" href="#requirements" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Python ≥ 3.12</li>
-<li><a href="https://github.com/astral-sh/uv">uv</a> for environment and dependency management</li>
+<li>Python ≥ 3.11</li>
+<li><a href="https://github.com/astral-sh/uv">uv</a> to develop NiceShot! (not necessary to use it)</li>
 </ul>
 
 

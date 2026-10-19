@@ -2,7 +2,7 @@
 # Run with: uv run python nice_shot/app.py SHOT_DATA [options]
 #
 # CLI usage:
-#   SHOT_DATA           Path to shot stats file, .csv or .parquet [required]
+#   SHOT_DATA           Path to shot stats file (.parquet, .csv, .pg, .sqlite, .db or .sql) [required]
 #
 # CLI options (all have defaults). Every option below this file also has a
 # corresponding CLI flag (e.g. --signals, --min-time, --projection-method, ...);
@@ -18,7 +18,8 @@
 #                       (hidden by default; tab only appears when this argument is supplied)
 #   --host HOST         Host to bind to (default: 0.0.0.0)
 #   --port PORT         Port to listen on (default: 8050)
-#   --no-debug          Disable Dash debug mode
+#   --workers N         Number of gunicorn worker processes (default: 4)
+#   --debug             Run the single-process Flask dev server instead of gunicorn
 
 # Backend for loading per-shot time traces.
 # Options:
@@ -26,6 +27,8 @@
 #              also transparently supports .csv files in the same directory
 #   uda      – fetch live from UDA via uda-xarray  (URL: uda://<signal>:<shot>)
 #   sal      – fetch live from SAL via sal-xarray   (URL: sal://pulse/<shot>/<signal>)
+#   postgres – query a PostgreSQL table (needs backend_options.dsn)
+#   fairmast – read per-shot Zarr / netCDF stores under --data-dir
 backend: parquet
 
 # Signals to load and display in the time-trace pane.
@@ -39,7 +42,7 @@ signals:
   - plasma_energy
 
 # Crop time traces to this window (seconds).
-# Applies to both backends.
+# Applies to all backends.
 time_window:
   min_time: 0.0
   max_time: 1.0
@@ -66,9 +69,9 @@ projection_method: umap
 #   metric: euclidean
 
 # Columns to use as features for the UMAP projection.
-# Defaults to all numeric columns (excluding 'shot') if not set.
+# Defaults to all numeric columns (excluding 'shot_id') if not set.
 # Changing this list forces the UMAP cache to be recomputed.
-# Shots with NaN in any of these columns are excluded from the projection.
+# A missing (NaN) value is replaced by the mean of its column.
 #
 umap_features:
   - ip_max
@@ -79,9 +82,8 @@ umap_features:
   - tf_current
 
 # Column in the shot data that holds the reference (parent) shot ID for each shot.
-# When set, a toggle button appears in the left panel; enabling it highlights the
-# full connected reference-shot graph on the scatter plots when a point is clicked.
-# Omit or set to null to hide the feature entirely.
+# When set, the Lineage tab shows how a shot differs from the earlier shots in
+# its reference lineage. Omit or set to null to turn the Lineage tab off.
 #
 # reference_shot_col: reference__number
 

@@ -1,0 +1,869 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Interactive tokamak shot dashboard">
+      
+      
+      
+      
+        <link rel="prev" href="../dashboard/">
+      
+      
+        <link rel="next" href="../configuration/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="zensical-0.0.45">
+    
+    
+      
+        <title>Classification - NiceShot!</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.fba56155.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,500,500i,700,700i%7CJetBrains+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-label="Navigation"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#classification" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="./.." title="NiceShot!" class="md-header__button md-logo" aria-label="NiceShot!" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 7v14M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer" aria-label="Navigation">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            NiceShot!
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Classification
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search" aria-label="Search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="./.." title="NiceShot!" class="md-nav__button md-logo" aria-label="NiceShot!" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 7v14M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>
+
+    </a>
+    NiceShot!
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Home
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Quickstart
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dashboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Using the Dashboard
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Classification
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Classification
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#procedure" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Procedure
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#results" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Results
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Results">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-label-column" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The label column
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-decision-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The decision surface
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#shap" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        SHAP
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#export" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Export
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#models" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Models
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#evaluation" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Evaluation
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#normalisation" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Normalisation
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-the-results-are-cleared" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        When the results are cleared
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Configuration
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../data-formats/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Data Formats
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../custom-backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Custom Backends
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#procedure" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Procedure
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#results" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Results
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Results">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-label-column" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The label column
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-decision-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The decision surface
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#shap" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        SHAP
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#export" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Export
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#models" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Models
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#evaluation" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Evaluation
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#normalisation" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Normalisation
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-the-results-are-cleared" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        When the results are cleared
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+<h1 id="classification">Classification<a class="headerlink" href="#classification" title="Permanent link">&para;</a></h1>
+<p>The <strong>Classification</strong> tab trains a supervised model on the shot table. You
+select the input columns and one target column. The app trains the model, gives
+a class to each shot, and shows the result on the scatter plots.</p>
+<p>The tab is in the lower left panel, next to <strong>Clustering</strong> and <strong>Outlier
+Detection</strong>.</p>
+<hr />
+<h2 id="procedure">Procedure<a class="headerlink" href="#procedure" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Select <strong>Model</strong>: Gradient Boosting, Random Forest or Gaussian Process.</li>
+<li>Select <strong>Target</strong>: the column to learn. The list shows only the columns with
+   two to twenty different values. A column with more values than this is a
+   quantity, not a label.</li>
+<li>Select <strong>Features</strong>: one or more numeric columns.</li>
+<li>Set the hyperparameters. The tab shows only the ones that the selected model
+   uses.</li>
+<li>Click <strong>Train model</strong>. A spinner shows while the model trains.</li>
+</ol>
+<p>The status line shows the number of classes, the number of shots, and the
+accuracy on the training rows and on the held-out rows.</p>
+<hr />
+<h2 id="results">Results<a class="headerlink" href="#results" title="Permanent link">&para;</a></h2>
+<h3 id="the-label-column">The label column<a class="headerlink" href="#the-label-column" title="Permanent link">&para;</a></h3>
+<p>Training makes a <code>label</code> column. This column holds the predicted class of each
+shot. The Projection and the Pairwise Scatter change to <strong>Label (model)</strong> and
+show this column as the point colour.</p>
+<p>Shots with no target value are also given a label. The model does not train on
+them, but it makes a prediction for them.</p>
+<h3 id="the-decision-surface">The decision surface<a class="headerlink" href="#the-decision-surface" title="Permanent link">&para;</a></h3>
+<p>The background of the Projection and the Pairwise Scatter shows the probability
+of one class. Red is a high probability, blue is a low probability.</p>
+<p>Use the <strong>Surface class</strong> list to select the class. For a target with two
+classes, the default is the second class. Thus a 0/1 target shows P(1).</p>
+<p>To remove the background, clear the <strong>Decision surface</strong> checkbox.</p>
+<p>The surface obeys the filters. It covers only the shots that the Filters tab
+keeps, and it is calculated again when you change a filter. Thus you can look
+at the decision boundary of one part of the data set.</p>
+<div class="admonition note">
+<p class="admonition-title">The surface is a two-dimensional view</p>
+<p>The model uses all the selected feature columns, but a plot has only two
+axes. The app calculates the probability of each shot with the model, then
+interpolates those probabilities across the plane of the plot. The surface
+is thus a view of the decision boundary, not the boundary itself.</p>
+<p>The app does not draw the surface where there are no shots. It also does
+not draw the surface when a filter keeps fewer than three shots, because
+too few points show no boundary.</p>
+</div>
+<p>The surface obeys a logarithmic axis. The app makes the grid in log space, so
+the cells stay equally spaced on the screen. On such an axis, the app ignores
+the shots with a value of zero or less, because the plot cannot show them
+either.</p>
+<h3 id="shap">SHAP<a class="headerlink" href="#shap" title="Permanent link">&para;</a></h3>
+<p>Click a point to see a SHAP decision plot for that shot in the <strong>SHAP</strong> tab.
+The plot shows how each feature moved the prediction away from the average.
+For a target with more than two classes, the plot shows the class that the
+<strong>Surface class</strong> list selects.</p>
+<p>SHAP is an optional extra:</p>
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;nice-shot[shap]&quot;</span>
+</span></code></pre></div>
+<h3 id="export">Export<a class="headerlink" href="#export" title="Permanent link">&para;</a></h3>
+<p><strong>Download CSV</strong> in the Data Table tab adds the <code>label</code> column and one
+probability column for each class.</p>
+<hr />
+<h2 id="models">Models<a class="headerlink" href="#models" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Hyperparameters</th>
+<th>Use it when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Gradient Boosting</td>
+<td><code>n_estimators</code>, <code>max_depth</code>, <code>learning_rate</code>, <code>subsample</code></td>
+<td>The default. It is accurate on tabular data.</td>
+</tr>
+<tr>
+<td>Random Forest</td>
+<td><code>n_estimators</code>, <code>max_depth</code>, <code>min_samples_leaf</code>, Balance classes</td>
+<td>The classes have very different sizes, or you want a fast fit.</td>
+</tr>
+<tr>
+<td>Gaussian Process</td>
+<td><code>kernel</code>, <code>length_scale</code>, <code>restarts</code>, <code>max_train_rows</code></td>
+<td>There are few shots and you want a smooth probability.</td>
+</tr>
+</tbody>
+</table>
+<p>A Gaussian Process becomes slow when there are many shots. The app takes a
+sample of the training rows if there are more than <code>max_train_rows</code>. The status
+line tells you when this occurs.</p>
+<hr />
+<h2 id="evaluation">Evaluation<a class="headerlink" href="#evaluation" title="Permanent link">&para;</a></h2>
+<p><strong>test_fraction</strong> sets the part of the labelled shots that the app keeps back
+from the fit. The default is 0.25. The app keeps the class proportions of the
+full set in both parts.</p>
+<p>The status line shows:</p>
+<ul>
+<li><strong>train acc</strong> — the accuracy on the rows used for the fit.</li>
+<li><strong>test acc</strong> — the accuracy on the held-out rows.</li>
+<li><strong>macro F1</strong> — the mean F1 score of the classes on the held-out rows. Use
+  this score when the classes have different sizes, because accuracy alone can
+  be high when the model always predicts the largest class.</li>
+</ul>
+<p>Set <strong>test_fraction</strong> to 0 to fit on all the labelled shots. The status line
+then shows no test score.</p>
+<p><strong>seed</strong> makes the split and the fit repeatable. The same seed gives the same
+result.</p>
+<hr />
+<h2 id="normalisation">Normalisation<a class="headerlink" href="#normalisation" title="Permanent link">&para;</a></h2>
+<p>The app normalises the features before the fit. It puts a missing value to the
+median of its column, then scales each column by its median and its
+interquartile range.</p>
+<p>This is a robust normalisation. A small number of extreme shots — a disruption,
+or a bad measurement — does not set the scale for all the other shots. A column
+in megamps and a column in per-cent thus have the same importance to the model.</p>
+<hr />
+<h2 id="when-the-results-are-cleared">When the results are cleared<a class="headerlink" href="#when-the-results-are-cleared" title="Permanent link">&para;</a></h2>
+<p>A change to the projection settings clears the labels, the probabilities and
+the model. The feature matrix came from the previous dataset, so the
+predictions are no longer correct for the new one. Train the model again.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":[],"search":"../assets/javascripts/workers/search.e2d2d235.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.6e5f0216.min.js"></script>
+      
+    
+  </body>
+</html>

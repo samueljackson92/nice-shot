@@ -1,10 +1,12 @@
 # Data Formats
 
+This page gives the layout of each input file.
+
 ---
 
 ## Shot statistics file (`SHOT_DATA`)
 
-A flat table of per-shot summary statistics. Accepted formats: `.parquet`, `.csv`, `.pg` (PostgreSQL), `.sqlite` / `.db` / `.sql` (any SQLAlchemy-supported database — see [below](#shot-statistics-from-sql-sqlite-db-sql)).
+A flat table of per-shot summary statistics. Accepted formats: `.parquet` / `.pq`, `.csv`, `.pg` (PostgreSQL), `.sqlite` / `.db` / `.sql` (any SQLAlchemy-supported database — see [below](#shot-statistics-from-sql-sqlite-db-sql)).
 
 **Required:** one column that identifies the shot. The following names are detected automatically (in order of preference):
 
@@ -15,6 +17,8 @@ shot_id  shot  pulse  number  exp_number  pulse_id  shot_number
 The column is renamed to `shot_id` internally regardless of its original name.
 
 All other columns can be anything. Object columns that can be coerced to numeric are converted automatically. Non-numeric columns are kept and available for coloring and filtering.
+
+To read a different file format, write a [custom shot data backend](custom-backends.md#write-a-shot-data-backend).
 
 **Example schema:**
 
@@ -129,14 +133,16 @@ Must contain a shot ID column (same auto-detection as the shot stats file) and a
 
 ## SHAP values file (`--shap-data`)
 
-A NetCDF file (`.nc`) containing a single `xarray.DataArray` with two named dimensions:
+A NetCDF file (`.nc`) that holds one `xarray.DataArray` with three dimensions:
 
-- `shot_id` — integer shot identifiers
-- `feature` — feature names (strings)
-- one additional dimension for class (the index `True` / class=1 is used)
+- `shot_id` — the shot identifiers.
+- `feature` — the feature names (strings). The decision plot uses these names.
+- `class` — the class. The app uses the values at `class=True`.
 
-The array is opened with `xr.open_dataset` and accessed via the default variable key `__xarray_dataarray_variable__`.
+The app opens the file with `xr.open_dataset` and reads the variable `__xarray_dataarray_variable__`. This is the name that `DataArray.to_netcdf` gives to an unnamed array.
 
-The shot-to-index mapping is built from the shot statistics file at load time, so `shot_id` values in the SHAP file must be a subset of those in `SHOT_DATA`.
+!!! warning "The rows must be in the same order as `SHOT_DATA`"
+
+    The app finds the SHAP values of a shot by its row position in the shot statistics file, not by its `shot_id` value. Row *i* of the SHAP array must be the same shot as row *i* of `SHOT_DATA`. Write the SHAP file from the same table, in the same order.
 
 If [`refresh_interval_seconds`](configuration.md#refresh_interval_seconds) is set, shots that arrive after startup are **not** added to the SHAP mapping — the SHAP file is static and never re-read. The SHAP panel simply has no data for those shots until a restart.

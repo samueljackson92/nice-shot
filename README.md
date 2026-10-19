@@ -13,7 +13,7 @@ An interactive dashboard for exploring tokamak plasma shot data. Point it at a s
 - **Pairwise scatter** — any two numeric columns plotted against each other, with linear/log axis toggles.
 - **Correlation** — interactive Pearson correlation heatmap for any selection of numeric columns.
 - **Data table** — sortable, virtualized table with shot-ID search, cross-highlight with scatter plots, and CSV export.
-- **Time traces** — per-shot signal plots loaded on click. Supports local parquet/CSV files, live UDA, live SAL, and FAIR MAST (Zarr/netCDF, local or remote) backends.
+- **Time traces** — per-shot signal plots loaded on click. Supports local parquet/CSV files, live UDA, live SAL, PostgreSQL, and FAIR MAST (Zarr/netCDF, local or remote) backends.
 - **Filters** — up to 6 simultaneous column filters combinable with AND / OR logic. All plots update live.
 - **Clustering** — run K-Means, DBSCAN, or Agglomerative clustering on any set of numeric columns. Results colour the scatter plots immediately; clusters can be given human-readable class names.
 - **Cluster centroid traces** — mean time-series per cluster, computed automatically after clustering and relabelled live as class names change.
@@ -21,9 +21,10 @@ An interactive dashboard for exploring tokamak plasma shot data. Point it at a s
 - **Classification** — train a Gradient Boosting, Random Forest, or Gaussian Process model on a target column and any set of numeric features. Predicted labels colour the scatter plots, and an optional decision-surface background shows the predicted probability of a chosen class. See [`docs/classification.md`](docs/classification.md).
 - **CSV export** — download the full data table with `cluster_id`, `cluster_name` columns appended when clustering has been run, and `label` plus per-class probability columns when classification has been run.
 - **SHAP decision plots** — per-shot feature attribution rendered inline, for a supplied SHAP file or for a trained classifier (optional, requires `--shap-data` or a trained model).
-- **Reference graph** — overlay the full reference-shot lineage on any scatter plot (optional, requires `reference_shot_col` in config).
 - **Lineage changes** — see which variables changed between a shot and the shots before it in the same reference lineage. Shows a ranked summary of every variable, a colour-coded history table, a lineage tree, the operator's notes, and sparklines (optional, requires `reference_shot_col` in config).
-- **Semantic search** — find shots similar to a selected one via nearest-neighbour search in feature space. Results are highlighted on the scatter plots with gold ring markers.
+- **Similar-shot search** — find shots similar to a selected one via nearest-neighbour search in feature space. Results are highlighted on the scatter plots with gold ring markers.
+- **Live configuration** — change most settings from the Configuration tab while the app runs. Changes apply to your browser only.
+- **Live updates** — poll the data source for new shots with `refresh_interval_seconds`, and add them to the running dashboard without moving the existing points.
 - **Long-format files** — point NiceShot at a table with one row per (shot, variable) and pick the variable from a header dropdown. Only the selected variable's rows are read, and the projection is computed for that variable alone.
 - **Extensible backends** — add support for new data sources (MDSplus, HDF5, custom APIs, …) by subclassing `TraceBackend` or `ShotDataBackend` and registering via `plugins:` in config.
 
@@ -32,7 +33,7 @@ An interactive dashboard for exploring tokamak plasma shot data. Point it at a s
 
 ## Requirements
 
-Python ≥ 3.12
+Python ≥ 3.11
 
 ---
 
@@ -40,7 +41,7 @@ Python ≥ 3.12
 
 ```sh
 pip install nice-shot
-pip install "nice-shot[shap]"       # + SHAP plots, xarray, matplotlib
+pip install "nice-shot[shap]"       # + SHAP decision plots
 ```
 
 ---
@@ -65,11 +66,13 @@ nice-shot path/to/shot_stats.parquet --debug
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `SHOT_DATA` | — (required) | Shot statistics file (`.csv` or `.parquet`) |
+| `SHOT_DATA` | — (required) | Shot statistics file (`.parquet`, `.csv`, `.pg`, `.sqlite`, `.db` or `.sql`) |
 | `--config PATH` | `nice_shot/config.yaml` | YAML config file |
 | `--data-dir PATH` | `data/mastu/` | Directory of per-shot files (parquet backend) |
 | `--projection PATH` | — | Pre-computed 2-D embedding; skips UMAP/PCA entirely |
-| `--shap-data PATH` | — | SHAP values NetCDF (`.nc`); enables the SHAP tab |
+| `--shap-data PATH` | — | SHAP values NetCDF (`.nc`) for the SHAP tab |
+| `--umap-cache PATH` | platform cache dir | Where to read and write the projection cache |
+| `--host HOST` | `0.0.0.0` | Bind address |
 | `--workers N` | `4` | Gunicorn worker processes (ignored in `--debug` mode) |
 | `--port PORT` | `8050` | Port to listen on |
 | `--debug` | off | Use the single-process Flask dev server instead of gunicorn |
@@ -96,6 +99,7 @@ Every option in `nice_shot/config.yaml` also has a CLI flag of the same name. An
 | `--umap-exclude-features COLUMN [COLUMN ...]` | `umap_exclude_features` |
 | `--reference-shot-col NAME` | `reference_shot_col` |
 | `--plugins MODULE [MODULE ...]` | `plugins` |
+| `--refresh-interval-seconds SECONDS` | `refresh_interval_seconds` |
 | `--backend-option KEY=VALUE` (repeatable) | `backend_options` (merged per-key) |
 
 Run `nice-shot --help` for full descriptions.
@@ -107,7 +111,7 @@ Run `nice-shot --help` for full descriptions.
 Edit `nice_shot/config.yaml` (or pass `--config` to point elsewhere):
 
 ```yaml
-backend: parquet        # parquet | uda | sal
+backend: parquet        # parquet | uda | sal | postgres | fairmast
 
 signals:                # columns shown in the time-trace panel
   - ip
@@ -130,7 +134,7 @@ umap_features:          # omit to use all numeric columns
   - ne_max
   - bt_max
 
-reference_shot_col: reference__number   # omit to hide the feature
+reference_shot_col: reference__number   # omit to turn off the Lineage tab
 ```
 
 Any of these can be overridden for a single run with the matching CLI flag — see [Config-backed flags](#config-backed-flags) above.
@@ -141,7 +145,7 @@ Most of them can also be changed while the app runs, from the **Configuration** 
 
 ## Data
 
-**Shot statistics file** (`SHOT_DATA`) — a flat `.parquet` or `.csv` with one row per shot. The shot ID column is detected automatically (`shot_id`, `shot`, `pulse`, `number`, …).
+**Shot statistics file** (`SHOT_DATA`) — a flat `.parquet` or `.csv` with one row per shot, or a PostgreSQL / SQL database table. The shot ID column is detected automatically (`shot_id`, `shot`, `pulse`, `number`, …).
 
 **Per-shot traces** (`--data-dir`) — one `.parquet` or `.csv` per shot, laid out as:
 ```
@@ -151,7 +155,7 @@ Each file needs a `time` column and one column per configured signal.
 
 **Pre-computed projection** (`--projection`) — a `.npy` (shape `(n,2)` or `(n,3)`), `.csv`, or `.parquet` with shot ID and two coordinate columns.
 
-**SHAP values** (`--shap-data`) — an `xarray` NetCDF file with `shot_id` and `feature` dimensions.
+**SHAP values** (`--shap-data`) — an `xarray` NetCDF file with `shot_id`, `feature` and `class` dimensions, in the same row order as `SHOT_DATA`.
 
 See [`docs/data-formats.md`](docs/data-formats.md) for full schema details.
 
@@ -163,4 +167,11 @@ See [`docs/data-formats.md`](docs/data-formats.md) for full schema details.
 uv run --dev zensical serve
 ```
 
-Opens the full documentation at **http://localhost:8000**.
+Opens the full documentation at **http://localhost:8000**. The pages are:
+
+- [Quickstart](docs/quickstart.md)
+- [Using the Dashboard](docs/dashboard.md)
+- [Classification](docs/classification.md)
+- [Configuration](docs/configuration.md)
+- [Data Formats](docs/data-formats.md)
+- [Custom Backends](docs/custom-backends.md)

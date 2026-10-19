@@ -14,12 +14,14 @@
         <link rel="prev" href="../configuration/">
       
       
+        <link rel="next" href="../custom-backends/">
+      
       
         
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="zensical-0.0.43">
+      <meta name="generator" content="zensical-0.0.45">
     
     
       
@@ -226,6 +228,58 @@
   
   
     <li class="md-nav__item">
+      <a href="../dashboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Using the Dashboard
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../classification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Classification
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../configuration/" class="md-nav__link">
         
   
@@ -311,10 +365,43 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#shot-statistics-file-shot-data" class="md-nav__link">
+  <a href="#shot-statistics-file-shot_data" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Shot statistics file (<code>--shot-data</code>)
+        Shot statistics file (<code>SHOT_DATA</code>)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#long-format-shot-statistics-variable_column" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Long-format shot statistics (<code>variable_column</code>)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shot-statistics-from-postgresql-pg-postgres-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Shot statistics from PostgreSQL (<code>.pg</code>, postgres backend)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shot-statistics-from-sql-sqlite-db-sql" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Shot statistics from SQL (<code>.sqlite</code>, <code>.db</code>, <code>.sql</code>)
       </span>
     </span>
   </a>
@@ -390,6 +477,32 @@
   
 
     
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../custom-backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Custom Backends
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
   </ul>
 </nav>
                   </div>
@@ -431,10 +544,43 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#shot-statistics-file-shot-data" class="md-nav__link">
+  <a href="#shot-statistics-file-shot_data" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Shot statistics file (<code>--shot-data</code>)
+        Shot statistics file (<code>SHOT_DATA</code>)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#long-format-shot-statistics-variable_column" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Long-format shot statistics (<code>variable_column</code>)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shot-statistics-from-postgresql-pg-postgres-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Shot statistics from PostgreSQL (<code>.pg</code>, postgres backend)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shot-statistics-from-sql-sqlite-db-sql" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Shot statistics from SQL (<code>.sqlite</code>, <code>.db</code>, <code>.sql</code>)
       </span>
     </span>
   </a>
@@ -518,14 +664,16 @@
                   
 
 <h1 id="data-formats">Data Formats<a class="headerlink" href="#data-formats" title="Permanent link">&para;</a></h1>
+<p>This page gives the layout of each input file.</p>
 <hr />
-<h2 id="shot-statistics-file-shot-data">Shot statistics file (<code>--shot-data</code>)<a class="headerlink" href="#shot-statistics-file-shot-data" title="Permanent link">&para;</a></h2>
-<p>A flat table of per-shot summary statistics. Accepted formats: <code>.parquet</code>, <code>.csv</code>.</p>
+<h2 id="shot-statistics-file-shot_data">Shot statistics file (<code>SHOT_DATA</code>)<a class="headerlink" href="#shot-statistics-file-shot_data" title="Permanent link">&para;</a></h2>
+<p>A flat table of per-shot summary statistics. Accepted formats: <code>.parquet</code> / <code>.pq</code>, <code>.csv</code>, <code>.pg</code> (PostgreSQL), <code>.sqlite</code> / <code>.db</code> / <code>.sql</code> (any SQLAlchemy-supported database — see <a href="#shot-statistics-from-sql-sqlite-db-sql">below</a>).</p>
 <p><strong>Required:</strong> one column that identifies the shot. The following names are detected automatically (in order of preference):</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>shot_id  shot  pulse  number  exp_number  pulse_id  shot_number
 </span></code></pre></div>
 <p>The column is renamed to <code>shot_id</code> internally regardless of its original name.</p>
 <p>All other columns can be anything. Object columns that can be coerced to numeric are converted automatically. Non-numeric columns are kept and available for coloring and filtering.</p>
+<p>To read a different file format, write a <a href="../custom-backends/#write-a-shot-data-backend">custom shot data backend</a>.</p>
 <p><strong>Example schema:</strong></p>
 <table>
 <thead>
@@ -555,11 +703,115 @@
 </tbody>
 </table>
 <hr />
+<h2 id="long-format-shot-statistics-variable_column">Long-format shot statistics (<code>variable_column</code>)<a class="headerlink" href="#long-format-shot-statistics-variable_column" title="Permanent link">&para;</a></h2>
+<p>A file holding <strong>one row per <code>(shot, variable)</code> pair</strong> — the same set of statistic columns repeated for every variable, distinguished by a variable column. Set <a href="../configuration/#variable_column"><code>variable_column</code></a> in config to the name of that column; the file is then read one variable at a time and a variable selector appears in the header.</p>
+<p><strong>Required:</strong> a shot-ID column (detected as above) and the column named by <code>variable_column</code>. Both may be stored as index levels — pandas writes MultiIndex levels as columns, and they are flattened on load. All remaining columns are the per-variable statistics.</p>
+<p><strong>Example schema</strong> (<code>variable_column: variable_name</code>):</p>
+<table>
+<thead>
+<tr>
+<th>shot_id</th>
+<th>variable_name</th>
+<th>mean</th>
+<th>std</th>
+<th>iqr</th>
+<th>nan_percent</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>11766</td>
+<td>beta_pol</td>
+<td>0.084</td>
+<td>0.034</td>
+<td>0.012</td>
+<td>0.42</td>
+</tr>
+<tr>
+<td>11766</td>
+<td>q95</td>
+<td>7.455</td>
+<td>1.204</td>
+<td>0.331</td>
+<td>0.42</td>
+</tr>
+<tr>
+<td>11767</td>
+<td>beta_pol</td>
+<td>0.081</td>
+<td>0.029</td>
+<td>0.011</td>
+<td>0.39</td>
+</tr>
+<tr>
+<td>11767</td>
+<td>q95</td>
+<td>7.201</td>
+<td>1.118</td>
+<td>0.298</td>
+<td>0.39</td>
+</tr>
+</tbody>
+</table>
+<p>Every variable must share the same columns — the UI builds its widgets once from the file schema. The variable column itself is dropped after loading, since it is constant within one variable's slice.</p>
+<p>Only <code>.parquet</code> / <code>.pq</code> are supported, because the format is read with predicate pushdown so a single variable can be fetched without scanning the whole file. Column dtypes are taken from the Parquet schema and used as-is; unlike flat CSV sources, string columns are <strong>not</strong> sniffed and coerced to numeric, so store numeric statistics with numeric types.</p>
+<p>Nothing is read from the file body until a variable is chosen. Each variable's projection is cached to its own file next to the <code>--umap-cache</code> path.</p>
+<hr />
+<h2 id="shot-statistics-from-postgresql-pg-postgres-backend">Shot statistics from PostgreSQL (<code>.pg</code>, postgres backend)<a class="headerlink" href="#shot-statistics-from-postgresql-pg-postgres-backend" title="Permanent link">&para;</a></h2>
+<p>Use a <code>.pg</code> file extension for <code>SHOT_DATA</code> to read shot statistics directly from a PostgreSQL table via DuckDB's postgres extension. The file path stem is used as the default table name (e.g. <code>nice-shot shots.pg</code> reads from the <code>shots</code> table). Configure the connection and table via <code>backend_options</code> in config:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">backend_options</span><span class="p">:</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">dsn</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;postgresql://user:pass@host/db&quot;</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">shot_table</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">shots</span><span class="w">     </span><span class="c1"># optional — defaults to the SHOT_DATA path stem</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">schema</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">public</span><span class="w">        </span><span class="c1"># optional — defaults to public</span>
+</span></code></pre></div>
+<p>The same shot-ID column detection and renaming rules apply as for CSV/Parquet sources.</p>
+<hr />
+<h2 id="shot-statistics-from-sql-sqlite-db-sql">Shot statistics from SQL (<code>.sqlite</code>, <code>.db</code>, <code>.sql</code>)<a class="headerlink" href="#shot-statistics-from-sql-sqlite-db-sql" title="Permanent link">&para;</a></h2>
+<p>Use a <code>.sqlite</code>, <code>.db</code>, or <code>.sql</code> file extension for <code>SHOT_DATA</code> to read shot statistics from any <a href="https://www.sqlalchemy.org/">SQLAlchemy</a>-supported database via <code>SqlShotDataBackend</code>. This is more general than the <code>.pg</code> PostgreSQL backend above (any engine SQLAlchemy has a dialect for, not just PostgreSQL), with sqlite as the zero-config case:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">backend_options</span><span class="p">:</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;postgresql+psycopg://user:pass@host/db&quot;</span><span class="w">   </span><span class="c1"># optional — see below for the default</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">shot_table</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">shots</span><span class="w">                                 </span><span class="c1"># optional — defaults to the SHOT_DATA path stem</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="nt">query</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;SELECT</span><span class="nv"> </span><span class="s">*</span><span class="nv"> </span><span class="s">FROM</span><span class="nv"> </span><span class="s">shots</span><span class="nv"> </span><span class="s">WHERE</span><span class="nv"> </span><span class="s">campaign</span><span class="nv"> </span><span class="s">=</span><span class="nv"> </span><span class="s">&#39;MU03&#39;&quot;</span><span class="w">  </span><span class="c1"># optional — overrides shot_table entirely</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="nt">shot_col</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">shot_id</span><span class="w">                                 </span><span class="c1"># optional — defaults to shot_id</span>
+</span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>url</code></td>
+<td><code>sqlite:///&lt;SHOT_DATA path&gt;</code> for <code>.sqlite</code>/<code>.db</code>; <strong>required</strong> for <code>.sql</code></td>
+<td>SQLAlchemy connection URL. sqlite needs no extra driver (uses Python's stdlib <code>sqlite3</code>); other engines need their driver package installed separately, e.g. <code>psycopg</code> for PostgreSQL or <code>pymysql</code> for MySQL.</td>
+</tr>
+<tr>
+<td><code>shot_table</code></td>
+<td>path stem of <code>SHOT_DATA</code></td>
+<td>Table read via <code>SELECT * FROM shot_table</code>.</td>
+</tr>
+<tr>
+<td><code>query</code></td>
+<td><em>(none)</em></td>
+<td>A raw <code>SELECT</code> to run instead of <code>shot_table</code> — use this for joins or other custom SQL.</td>
+</tr>
+<tr>
+<td><code>shot_col</code></td>
+<td><code>shot_id</code></td>
+<td>Column holding the shot ID in the <strong>source</strong> table, before it's renamed to <code>shot_id</code>. Used to push an "only rows newer than X" filter into the database for live updates (see <a href="../configuration/#refresh_interval_seconds"><code>refresh_interval_seconds</code></a>) — assumes shot IDs increase monotonically over time.</td>
+</tr>
+</tbody>
+</table>
+<p>The same shot-ID column detection and renaming rules apply as for CSV/Parquet sources once <code>shot_col</code> has been applied.</p>
+<hr />
 <h2 id="per-shot-time-trace-files-data-dir-parquet-backend">Per-shot time trace files (<code>--data-dir</code>, parquet backend)<a class="headerlink" href="#per-shot-time-trace-files-data-dir-parquet-backend" title="Permanent link">&para;</a></h2>
 <p>Each shot lives in its own file under <code>--data-dir</code>:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>&lt;data-dir&gt;/
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>  &lt;any-subdir&gt;/
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    &lt;shot_id&gt;.parquet   # or .csv
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>&lt;data-dir&gt;/
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>  &lt;any-subdir&gt;/
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    &lt;shot_id&gt;.parquet   # or .csv
 </span></code></pre></div>
 <p><strong>Required columns:</strong></p>
 <ul>
@@ -601,14 +853,18 @@
 </table>
 <hr />
 <h2 id="shap-values-file-shap-data">SHAP values file (<code>--shap-data</code>)<a class="headerlink" href="#shap-values-file-shap-data" title="Permanent link">&para;</a></h2>
-<p>A NetCDF file (<code>.nc</code>) containing a single <code>xarray.DataArray</code> with two named dimensions:</p>
+<p>A NetCDF file (<code>.nc</code>) that holds one <code>xarray.DataArray</code> with three dimensions:</p>
 <ul>
-<li><code>shot_id</code> — integer shot identifiers</li>
-<li><code>feature</code> — feature names (strings)</li>
-<li>one additional dimension for class (the index <code>True</code> / class=1 is used)</li>
+<li><code>shot_id</code> — the shot identifiers.</li>
+<li><code>feature</code> — the feature names (strings). The decision plot uses these names.</li>
+<li><code>class</code> — the class. The app uses the values at <code>class=True</code>.</li>
 </ul>
-<p>The array is opened with <code>xr.open_dataset</code> and accessed via the default variable key <code>__xarray_dataarray_variable__</code>.</p>
-<p>The shot-to-index mapping is built from the shot statistics file at load time, so <code>shot_id</code> values in the SHAP file must be a subset of those in <code>--shot-data</code>.</p>
+<p>The app opens the file with <code>xr.open_dataset</code> and reads the variable <code>__xarray_dataarray_variable__</code>. This is the name that <code>DataArray.to_netcdf</code> gives to an unnamed array.</p>
+<div class="admonition warning">
+<p class="admonition-title">The rows must be in the same order as <code>SHOT_DATA</code></p>
+<p>The app finds the SHAP values of a shot by its row position in the shot statistics file, not by its <code>shot_id</code> value. Row <em>i</em> of the SHAP array must be the same shot as row <em>i</em> of <code>SHOT_DATA</code>. Write the SHAP file from the same table, in the same order.</p>
+</div>
+<p>If <a href="../configuration/#refresh_interval_seconds"><code>refresh_interval_seconds</code></a> is set, shots that arrive after startup are <strong>not</strong> added to the SHAP mapping — the SHAP file is static and never re-read. The SHAP panel simply has no data for those shots until a restart.</p>
 
 
 

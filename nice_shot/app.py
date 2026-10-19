@@ -2379,7 +2379,7 @@ def _cfg_columns_section() -> html.Div:
             ),
             html.Div(
                 "The column that holds the reference (parent) shot of each shot. Set it to use the "
-                "Lineage tab and the reference-graph toggle. Clear it to turn both off.",
+                "Lineage tab. Clear it to turn the tab off.",
                 style=dict(fontSize="10px", color="#666", marginTop="8px"),
             ),
         ],

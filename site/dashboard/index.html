@@ -1,0 +1,1297 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Interactive tokamak shot dashboard">
+      
+      
+      
+      
+        <link rel="prev" href="../quickstart/">
+      
+      
+        <link rel="next" href="../classification/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="zensical-0.0.45">
+    
+    
+      
+        <title>Using the Dashboard - NiceShot!</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.fba56155.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,500,500i,700,700i%7CJetBrains+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-label="Navigation"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#using-the-dashboard" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="./.." title="NiceShot!" class="md-header__button md-logo" aria-label="NiceShot!" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 7v14M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer" aria-label="Navigation">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            NiceShot!
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Using the Dashboard
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search" aria-label="Search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="./.." title="NiceShot!" class="md-nav__button md-logo" aria-label="NiceShot!" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 7v14M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>
+
+    </a>
+    NiceShot!
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Home
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Quickstart
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Using the Dashboard
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Using the Dashboard
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Layout
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#projection" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Projection
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pairwise-scatter" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Pairwise Scatter
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Data Table
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#filters" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Filters
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shot-info" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Shot Info
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#time-traces" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Time Traces
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#clustering" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Clustering
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Clustering">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cluster-traces" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Cluster Traces
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#outlier-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Outlier Detection
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Outlier Detection">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#outlier-traces" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Outlier Traces
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#classification" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Classification
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shap" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        SHAP
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#search" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Search
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#correlation" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Correlation
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lineage" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Lineage
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Lineage">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-summary-card" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The summary card
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-history-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The history table
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-other-views" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The other views
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Variables
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#filters-and-the-lineage" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Filters and the lineage
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Configuration
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../classification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Classification
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Configuration
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../data-formats/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Data Formats
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../custom-backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Custom Backends
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Layout
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#projection" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Projection
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pairwise-scatter" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Pairwise Scatter
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Data Table
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#filters" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Filters
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shot-info" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Shot Info
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#time-traces" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Time Traces
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#clustering" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Clustering
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Clustering">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cluster-traces" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Cluster Traces
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#outlier-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Outlier Detection
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Outlier Detection">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#outlier-traces" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Outlier Traces
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#classification" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Classification
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shap" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        SHAP
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#search" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Search
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#correlation" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Correlation
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lineage" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Lineage
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Lineage">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-summary-card" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The summary card
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-history-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The history table
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-other-views" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The other views
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Variables
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#filters-and-the-lineage" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Filters and the lineage
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Configuration
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+<h1 id="using-the-dashboard">Using the Dashboard<a class="headerlink" href="#using-the-dashboard" title="Permanent link">&para;</a></h1>
+<p>This page tells you how to use each tab of the dashboard.</p>
+<hr />
+<h2 id="layout">Layout<a class="headerlink" href="#layout" title="Permanent link">&para;</a></h2>
+<p>The dashboard has two panes. Each pane has groups of tabs.</p>
+<table>
+<thead>
+<tr>
+<th>Pane</th>
+<th>Tabs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Left pane, upper part</td>
+<td>Time Traces, SHAP, Cluster Traces, Outlier Traces</td>
+</tr>
+<tr>
+<td>Left pane, lower part</td>
+<td>Shot Info, Clustering, Outlier Detection, Classification, Filters</td>
+</tr>
+<tr>
+<td>Right pane</td>
+<td>Projection, Pairwise Scatter, Data Table, Search, Correlation, Lineage, Configuration</td>
+</tr>
+</tbody>
+</table>
+<p>Click a point on a scatter plot, or a row in the Data Table, to select a shot. Many tabs use the selected shot.</p>
+<hr />
+<h2 id="projection">Projection<a class="headerlink" href="#projection" title="Permanent link">&para;</a></h2>
+<p>The <strong>Projection</strong> tab shows a UMAP or PCA scatter plot of all the shots. Set the method and its options with <a href="../configuration/#projection_method"><code>projection_method</code></a> and <a href="../configuration/#projection_options"><code>projection_options</code></a>, or in the <a href="../configuration/#configuration-tab">Configuration tab</a>.</p>
+<p>Use <strong>Color by</strong> to select the column that sets the colour of the points. After you run clustering, outlier detection or classification, the plot changes to <strong>Cluster</strong>, <strong>Outliers</strong> or <strong>Label (model)</strong>.</p>
+<p>The app keeps the projection in a cache. The next start with the same data and settings does not calculate it again.</p>
+<hr />
+<h2 id="pairwise-scatter">Pairwise Scatter<a class="headerlink" href="#pairwise-scatter" title="Permanent link">&para;</a></h2>
+<p>The <strong>Pairwise Scatter</strong> tab plots two numeric columns against each other.</p>
+<ul>
+<li>Select the <strong>X axis</strong> and the <strong>Y axis</strong> columns.</li>
+<li>Use <strong>Lin</strong> or <strong>Log</strong> to set the scale of each axis.</li>
+<li>Use <strong>Color by (optional)</strong> to set the colour of the points.</li>
+</ul>
+<hr />
+<h2 id="data-table">Data Table<a class="headerlink" href="#data-table" title="Permanent link">&para;</a></h2>
+<p>The <strong>Data Table</strong> tab shows the shot records. You can sort the table and search it by shot ID. Click a row to select that shot on the scatter plots.</p>
+<p><strong>Download CSV</strong> exports the table. The file also has these columns:</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cluster_id</code></td>
+<td>After clustering. <code>-1</code> is DBSCAN noise.</td>
+</tr>
+<tr>
+<td><code>cluster_name</code></td>
+<td>After clustering. The name you gave in the Clustering tab, or <code>Cluster N</code>.</td>
+</tr>
+<tr>
+<td><code>label</code></td>
+<td>After classification. The predicted class.</td>
+</tr>
+<tr>
+<td>One probability column for each class</td>
+<td>After classification.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="filters">Filters<a class="headerlink" href="#filters" title="Permanent link">&para;</a></h2>
+<p>The <strong>Filters</strong> tab keeps only the shots that agree with a set of conditions. All the plots and tables obey the filters, except the <a href="#lineage">Lineage tab</a>.</p>
+<p>You can set a maximum of six filters. Each filter has a column, an operator and a value. The operators are <code>&gt;=</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&lt;</code>, <code>==</code>, <code>!=</code> and <code>contains</code>. The <code>contains</code> operator compares text and ignores case.</p>
+<p>Use <strong>Combine with</strong> to select <strong>AND</strong> (a shot must agree with all the filters) or <strong>OR</strong> (a shot must agree with one filter or more). Click <strong>x</strong> to remove one filter, or <strong>Clear all</strong> to remove all of them. The tab shows the number of shots that the filters keep.</p>
+<hr />
+<h2 id="shot-info">Shot Info<a class="headerlink" href="#shot-info" title="Permanent link">&para;</a></h2>
+<p>The <strong>Shot Info</strong> tab shows all the values for the selected shot.</p>
+<hr />
+<h2 id="time-traces">Time Traces<a class="headerlink" href="#time-traces" title="Permanent link">&para;</a></h2>
+<p>The <strong>Time Traces</strong> tab shows the <a href="../configuration/#signals">signals</a> of the selected shot. The app reads them with the <a href="../configuration/#backend">trace backend</a>.</p>
+<p>The app hides the time-trace panel when it cannot find trace data, for example when <code>--data-dir</code> does not exist.</p>
+<hr />
+<h2 id="clustering">Clustering<a class="headerlink" href="#clustering" title="Permanent link">&para;</a></h2>
+<p>The <strong>Clustering</strong> tab puts the shots into groups from their statistics.</p>
+<ol>
+<li>Select the algorithm: K-Means, DBSCAN or Agglomerative.</li>
+<li>Select the feature columns. The default is the projection features.</li>
+<li>Set the parameters:<ul>
+<li><code>n_clusters</code> — the number of clusters (K-Means and Agglomerative).</li>
+<li><code>eps</code> and <code>min_samples</code> — the neighbourhood radius and the density limit (DBSCAN).</li>
+</ul>
+</li>
+<li>Click <strong>Run clustering</strong>. The scatter plots change to the cluster colours.</li>
+<li>Type a name for each cluster. The legend and the cluster traces change immediately.</li>
+</ol>
+<h3 id="cluster-traces">Cluster Traces<a class="headerlink" href="#cluster-traces" title="Permanent link">&para;</a></h3>
+<p>After clustering, the <strong>Cluster Traces</strong> tab shows the mean time trace of each cluster, with one line for each cluster. The app calculates the traces after each run. Click <strong>Compute centroid traces</strong> to calculate them again.</p>
+<p>This tab needs a <a href="../configuration/#backend">trace backend</a>. If there is no trace data, the tab shows a message.</p>
+<hr />
+<h2 id="outlier-detection">Outlier Detection<a class="headerlink" href="#outlier-detection" title="Permanent link">&para;</a></h2>
+<p>The <strong>Outlier Detection</strong> tab finds unusual shots.</p>
+<ol>
+<li>Select the algorithm: Isolation Forest or Local Outlier Factor.</li>
+<li>Select the feature columns. The default is the projection features.</li>
+<li>Set the parameters:<ul>
+<li><code>contamination</code> — the expected fraction of outliers, from 0.01 to 0.5. The default is 0.1.</li>
+<li><code>n_neighbors</code> — the neighbourhood size, for Local Outlier Factor only. The default is 20.</li>
+</ul>
+</li>
+<li>Click <strong>Run outlier detection</strong>. The scatter plots show outliers in red and inliers in blue.</li>
+</ol>
+<h3 id="outlier-traces">Outlier Traces<a class="headerlink" href="#outlier-traces" title="Permanent link">&para;</a></h3>
+<p>After each run, the <strong>Outlier Traces</strong> tab shows the time traces of a maximum of five outlier shots. Each shot has its own line.</p>
+<p>This tab needs a <a href="../configuration/#backend">trace backend</a>.</p>
+<hr />
+<h2 id="classification">Classification<a class="headerlink" href="#classification" title="Permanent link">&para;</a></h2>
+<p>The <strong>Classification</strong> tab trains a supervised model on the shot table. Refer to <a href="../classification/">Classification</a>.</p>
+<hr />
+<h2 id="shap">SHAP<a class="headerlink" href="#shap" title="Permanent link">&para;</a></h2>
+<p>The <strong>SHAP</strong> tab shows a SHAP decision plot for the selected shot. The plot shows how each feature moved the prediction away from the mean prediction.</p>
+<p>The tab gets SHAP values from one of these sources:</p>
+<ul>
+<li>A file that you give with <code>--shap-data</code>. Refer to <a href="../data-formats/#shap-values-file-shap-data">SHAP values file</a>.</li>
+<li>A model that you train in the <a href="../classification/#shap">Classification</a> tab.</li>
+</ul>
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>nice-shot<span class="w"> </span>outputs/shot_stats.parquet<span class="w"> </span>--shap-data<span class="w"> </span>outputs/shap_values.nc
+</span></code></pre></div>
+<p>The plots need the <code>shap</code> extra:</p>
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;nice-shot[shap]&quot;</span>
+</span></code></pre></div>
+<hr />
+<h2 id="search">Search<a class="headerlink" href="#search" title="Permanent link">&para;</a></h2>
+<p>The <strong>Search</strong> tab finds the shots that are most similar to one shot. It uses a nearest-neighbour search in feature space.</p>
+<ol>
+<li>Click a shot on a scatter plot. The search starts automatically. Alternatively, type a shot ID and click <strong>Find similar shots</strong>.</li>
+<li>Set <strong>K</strong>, the number of similar shots to find. The default is 10.</li>
+<li>Change the features if necessary. The default is the projection features.</li>
+</ol>
+<p>The Projection and Pairwise Scatter plots show the results as gold rings. The most similar shot has the brightest ring. The tab shows a table of the results with their distances, and the time traces of the similar shots.</p>
+<p>Use the <strong>Similar shots: ON/OFF</strong> button in the left pane to hide the rings. This does not clear the results.</p>
+<hr />
+<h2 id="correlation">Correlation<a class="headerlink" href="#correlation" title="Permanent link">&para;</a></h2>
+<p>The <strong>Correlation</strong> tab shows a Pearson correlation matrix for a set of numeric columns.</p>
+<ul>
+<li>The default columns are the projection features. Select at least two columns.</li>
+<li>The matrix obeys the filters, so it shows only the shots that the filters keep.</li>
+<li>Blue is −1, white is 0 and red is +1. Each cell shows its <code>r</code> value.</li>
+</ul>
+<hr />
+<h2 id="lineage">Lineage<a class="headerlink" href="#lineage" title="Permanent link">&para;</a></h2>
+<p>The <strong>Lineage</strong> tab shows how one shot is different from the shots before it in the same reference lineage. It tells you what changed against the reference shot, and what the earlier shots in the lineage tried.</p>
+<p>To use this tab, set <a href="../configuration/#reference_shot_col"><code>reference_shot_col</code></a> to the column that holds the reference (parent) shot ID of each shot:</p>
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>nice-shot<span class="w"> </span>shot_stats.parquet<span class="w"> </span>--reference-shot-col<span class="w"> </span>reference__number
+</span></code></pre></div>
+<p>The tab is always in the tab bar. Until you set the column, the tab is off and tells you what is missing. You can also set the column in the <a href="../configuration/#configuration-tab">Configuration tab</a>, without a restart.</p>
+<p>The tab uses the selected shot. If no shot is selected, the tab uses the shot with the highest shot ID.</p>
+<p>Use the lineage control to select which shots the tab includes:</p>
+<table>
+<thead>
+<tr>
+<th>Lineage</th>
+<th>Shots included</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Ancestor chain</td>
+<td>The shot, its reference shot, the reference shot of that shot, and so on. This is the default.</td>
+</tr>
+<tr>
+<td>Connected</td>
+<td>All shots that connect to the shot through reference links.</td>
+</tr>
+<tr>
+<td>Siblings</td>
+<td>All shots that have the same reference shot.</td>
+</tr>
+</tbody>
+</table>
+<p>A lineage holds a maximum of 100 shots. The tab always keeps the selected shot.</p>
+<h3 id="the-summary-card">The summary card<a class="headerlink" href="#the-summary-card" title="Permanent link">&para;</a></h3>
+<p>At the top, the tab shows a card with one row for each variable in the table. Each row gives the old value, the new value, the size of the change, and a bar. The largest change comes first, in either direction. Scroll the card to see the smaller changes and then the variables that did not change. The card covers all the variables in the table, not only the variables you select below it.</p>
+<p>Use the <strong>Rank by</strong> control to select the measure that sorts the card and gives the value in the change column:</p>
+<table>
+<thead>
+<tr>
+<th>Rank by</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>z-scored</td>
+<td>The change divided by the spread of that column across all shots. This is the default. Use it to compare variables that have different units.</td>
+</tr>
+<tr>
+<td>percentage</td>
+<td>The change as a percentage of the value of the reference shot. The card gives the percentage in its own column, and the percentage sets the length of the bar. The change column then gives the change in the units of the variable. The tab cannot calculate a percentage if the value of the reference shot is 0.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="the-history-table">The history table<a class="headerlink" href="#the-history-table" title="Permanent link">&para;</a></h3>
+<p>The <strong>History</strong> view shows one row for each shot in the lineage. The newest shot is the first row. The <code>rel</code> column gives the position of each shot relative to the selected shot.</p>
+<p>The table gives one column for each variable you select. The colour of a cell shows the change from the previous shot in the lineage. Red is an increase. Blue is a decrease. The text in a cell is always the raw value. Point at a cell to see the change.</p>
+<p>Use the colour control to select the measure:</p>
+<table>
+<thead>
+<tr>
+<th>Measure</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>z-scored change</td>
+<td>The change divided by the spread of that column across all shots. This is the default. It makes the colours comparable between variables that use different units.</td>
+</tr>
+<tr>
+<td>percent change</td>
+<td>The change as a percentage of the previous value. The tab cannot calculate this value if the previous value is 0.</td>
+</tr>
+<tr>
+<td>absolute change</td>
+<td>The change in the units of the variable. The colours are not comparable between variables.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="the-other-views">The other views<a class="headerlink" href="#the-other-views" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>View</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Notes</td>
+<td>The text fields for each shot in the lineage. The tab shows all the columns that it cannot compare as numbers. The comment, objective and scenario fields come first.</td>
+</tr>
+<tr>
+<td>Tree</td>
+<td>The reference links between the shots in the lineage. Click a node to select that shot.</td>
+</tr>
+<tr>
+<td>Sparklines</td>
+<td>One small graph for each variable, in shot order. Use the <strong>Visualise</strong> control to select the variables. The view starts with the first 12 variables from the summary card, in the same order, and follows the <strong>Rank by</strong> control. Select <strong>Top 12</strong> to set this selection again.</td>
+</tr>
+</tbody>
+</table>
+<p>The tab builds the <strong>Sparklines</strong> view only while you look at it. It shows a spinner over a view while the view loads. A wide table, or a lineage that holds many shots, can need some seconds.</p>
+<h3 id="variables">Variables<a class="headerlink" href="#variables" title="Permanent link">&para;</a></h3>
+<p>A shot table can hold many variables. The variable control therefore searches the column names as you type, and shows a maximum of 200 names at a time.</p>
+<p>The tab selects all the projection features: the <code>umap_features</code> columns, or all the numeric columns if you do not set <code>umap_features</code>. These are the variables that give each shot its position on the scatter plot.</p>
+<p>Select <strong>Top changed</strong> to select the 20 variables that changed most instead. Select <strong>Projection features</strong> to select the projection features again. The tab keeps your selection when you click a different shot.</p>
+<h3 id="filters-and-the-lineage">Filters and the lineage<a class="headerlink" href="#filters-and-the-lineage" title="Permanent link">&para;</a></h3>
+<p>The Lineage tab does not use the filters. A hidden shot would make the change values incorrect, because the tab would then compare two shots that are not linked.</p>
+<p>Select <strong>Mark filtered shots</strong> to show which shots the filters hide. The tab keeps these shots in the table, but shows them in grey. The change values stay correct.</p>
+<hr />
+<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
+<p>The <strong>Configuration</strong> tab changes most settings while the app runs. Refer to <a href="../configuration/#configuration-tab">Configuration tab</a>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":[],"search":"../assets/javascripts/workers/search.e2d2d235.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.6e5f0216.min.js"></script>
+      
+    
+  </body>
+</html>

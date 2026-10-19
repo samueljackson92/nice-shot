@@ -9,10 +9,16 @@ Home = "index.md"
 Quickstart = "quickstart.md"
 
 [[project.nav]]
+"Using the Dashboard" = "dashboard.md"
+
+[[project.nav]]
+Classification = "classification.md"
+
+[[project.nav]]
 Configuration = "configuration.md"
 
 [[project.nav]]
 "Data Formats" = "data-formats.md"
 
 [[project.nav]]
-Classification = "classification.md"
+"Custom Backends" = "custom-backends.md"

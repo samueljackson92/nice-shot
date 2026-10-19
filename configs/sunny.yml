@@ -88,11 +88,11 @@ uda:
 # Reference shot column — column in the shot statistics file that holds
 # the reference (parent) shot ID.
 #
-# When set, a toggle appears in the left panel that draws the connected
-# reference graph on the scatter plot when a shot is selected.
-# Omit (or set to null) to hide this feature.
+# When set, the Lineage tab shows how a shot differs from the earlier
+# shots in its reference lineage.
+# Omit (or set to null) to turn the Lineage tab off.
 # ---------------------------------------------------------------------------
-# reference_shot_col: reference__number
+reference_shot_col: reference_shot
 
 # ---------------------------------------------------------------------------
 # Plugins — Python module paths imported at startup before backends are

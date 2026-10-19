@@ -8,7 +8,7 @@ A setting can come from three places. A value from a later place replaces a valu
 2. The config file.
 3. The command line.
 
-Almost every setting below also has a command-line flag of the same name. Run `nice-shot --help` for the list.
+Almost every setting below also has a command-line flag of the same name. Refer to [Command-line reference](#command-line-reference), or run `nice-shot --help`.
 
 The [Configuration tab](#configuration-tab) changes many of these settings while the app runs. Those changes apply to your browser only, and a restart returns to the config file.
 
@@ -25,7 +25,7 @@ Controls how per-shot time traces are loaded.
 | Value | Behaviour |
 |-------|-----------|
 | `parquet` | Reads `.parquet` or `.csv` files from `--data-dir`. The time-trace panel is hidden if the directory is absent or empty. |
-| `uda` | Fetches live data from UDA via `uda-xarray`. URL form: `uda://<signal>:<shot>`. Requires `uda-xarray` installed separately. |
+| `uda` | Fetches live data from UDA via `uda-xarray`. URL form: `uda://<signal>:<shot>`. NiceShot! installs `uda-xarray`. |
 | `sal` | Fetches live data from SAL via `sal-xarray`. URL form: `sal://pulse/<shot>/<signal>`. Requires `sal-xarray` installed separately. |
 | `postgres` | Queries a PostgreSQL table via DuckDB's postgres extension. Requires `dsn` in `backend_options`. The time-trace panel is hidden if the database is unreachable at startup. |
 | `fairmast` | Reads per-shot Zarr or netCDF stores (local or remote, e.g. FAIR MAST's S3-hosted level2 data) via `xarray`. The time-trace panel is hidden if `--data-dir` is unreachable at startup. |
@@ -160,7 +160,7 @@ variable_column: variable_name
 
 Enables **long-format mode** for the shot statistics file: one row per `(shot, variable)` pair, with the named column identifying which variable each row describes. See [Data Formats](data-formats.md#long-format-shot-statistics-variable_column) for the required layout.
 
-When set, a variable selector appears in the header. No row data is read at startup — only the list of variable names. Picking a variable reads just that variable's rows and computes the projection, similarity index and reference graph for them alone. Each variable's projection is cached separately on disk, so revisiting one is instant.
+When set, a variable selector appears in the header. No row data is read at startup — only the list of variable names. Picking a variable reads just that variable's rows and computes the projection, similarity index and reference links for them alone. Each variable's projection is cached separately on disk, so revisiting one is instant.
 
 Omit (or set to `null`) for a normal flat, one-row-per-shot file.
 
@@ -193,75 +193,22 @@ reference_shot_col: reference__number
 
 Column in the shot statistics file that holds the reference (parent) shot ID.
 
-When you set this column, the dashboard adds two features:
+When you set this column, the [Lineage tab](dashboard.md#lineage) operates. The tab shows how one shot differs from the shots before it in the same lineage.
 
-- A toggle button in the left panel. Enable the button, then click a shot to draw the full connected reference graph on the scatter plots.
-- A **Lineage** tab. The tab shows how one shot differs from the shots before it in the same lineage.
+Omit the column, or set it to `null`, to turn the Lineage tab off.
 
-Omit the column, or set it to `null`, to hide both features.
+---
 
-### The Lineage tab
+## `plugins`
 
-The tab uses the selected shot. If no shot is selected, the tab uses the shot with the highest shot ID.
+```yaml
+plugins:
+  - my_package.my_backends
+```
 
-Use the lineage control to select which shots the tab includes:
+Python modules that the app imports at startup. A module registers a custom backend when the app imports it. Refer to [Custom Backends](custom-backends.md).
 
-| Lineage | Shots included |
-|---------|----------------|
-| Ancestor chain | The shot, its reference shot, the reference shot of that shot, and so on. This is the default. |
-| Connected | All shots that connect to the shot through reference links. |
-| Siblings | All shots that have the same reference shot. |
-
-A lineage holds a maximum of 100 shots. The tab always keeps the selected shot.
-
-#### The summary card
-
-At the top, the tab shows a card with one row for each variable in the table. Each row gives the old value, the new value, the size of the change, and a bar. The largest change comes first, in either direction. Scroll the card to see the smaller changes and then the variables that did not change. The card covers all the variables in the table, not only the variables you select below it.
-
-Use the **Rank by** control to select the measure that sorts the card and gives the value in the change column:
-
-| Rank by | Description |
-|---------|-------------|
-| z-scored | The change divided by the spread of that column across all shots. This is the default. Use it to compare variables that have different units. |
-| percentage | The change as a percentage of the value of the reference shot. The card gives the percentage in its own column, and the percentage sets the length of the bar. The change column then gives the change in the units of the variable. The tab cannot calculate a percentage if the value of the reference shot is 0. |
-
-#### The history table
-
-The **History** view shows one row for each shot in the lineage. The newest shot is the first row. The `rel` column gives the position of each shot relative to the selected shot.
-
-The table gives one column for each variable you select. The colour of a cell shows the change from the previous shot in the lineage. Red is an increase. Blue is a decrease. The text in a cell is always the raw value. Point at a cell to see the change.
-
-Use the colour control to select the measure:
-
-| Measure | Description |
-|---------|-------------|
-| z-scored change | The change divided by the spread of that column across all shots. This is the default. It makes the colours comparable between variables that use different units. |
-| percent change | The change as a percentage of the previous value. The tab cannot calculate this value if the previous value is 0. |
-| absolute change | The change in the units of the variable. The colours are not comparable between variables. |
-
-#### The other views
-
-| View | Description |
-|------|-------------|
-| Notes | The text fields for each shot in the lineage. The tab shows all the columns that it cannot compare as numbers. The comment, objective and scenario fields come first. |
-| Tree | The reference links between the shots in the lineage. Click a node to select that shot. |
-| Sparklines | One small graph for each variable, in shot order. Use the **Visualise** control to select the variables. The view starts with the first 12 variables from the summary card, in the same order, and follows the **Rank by** control. Select **Top 12** to set this selection again. |
-
-The tab builds the **Sparklines** view only while you look at it. It shows a spinner over a view while the view loads. A wide table, or a lineage that holds many shots, can need some seconds.
-
-#### Variables
-
-A shot table can hold many variables. The variable control therefore searches the column names as you type, and shows a maximum of 200 names at a time.
-
-The tab selects all the projection features: the `umap_features` columns, or all the numeric columns if you do not set `umap_features`. These are the variables that give each shot its position on the scatter plot.
-
-Select **Top changed** to select the 20 variables that changed most instead. Select **Projection features** to select the projection features again. The tab keeps your selection when you click a different shot.
-
-#### Column filters
-
-The Lineage tab does not use the column filters. A hidden shot would make the change values incorrect, because the tab would then compare two shots that are not linked.
-
-Select **Mark filtered shots** to show which shots the filters hide. The tab keeps these shots in the table, but shows them in grey. The change values stay correct.
+You can set this only in the config file or with `--plugins`. The Configuration tab cannot change it.
 
 ---
 
@@ -325,8 +272,6 @@ Only relevant when `SHOT_DATA` has a `.sqlite`, `.db`, or `.sql` extension — s
 ```yaml
 backend: fairmast
 
-data_dir: s3://mast/level2/shots   # or a local directory of <shot_id>.zarr / .nc files
-
 signals:
   - magnetics/ip
   - summary/ip
@@ -340,7 +285,11 @@ backend_options:
       endpoint_url: https://s3.echo.stfc.ac.uk
 ```
 
-Loads per-shot Zarr or netCDF-4 stores via `xarray`, one file per shot at `<data_dir>/<shot_id>.zarr` (or `.nc`). `data_dir` may be a local directory or any URL understood by `fsspec` (e.g. `s3://...`).
+Loads per-shot Zarr or netCDF-4 stores via `xarray`, one file per shot at `<data-dir>/<shot_id>.zarr` (or `.nc`). Give the location with the `--data-dir` flag. The config file has no `data_dir` setting. The location may be a local directory or any URL understood by `fsspec`:
+
+```sh
+nice-shot shot_stats.parquet --config configs/fairmast.yml --data-dir s3://mast/level2/shots
+```
 
 Signals are `"<group>/<variable>"` strings identifying a diagnostic group and variable within the store (e.g. `thomson_scattering/t_e`); a name with no `/` is read from the store's root group. **Only scalar (time-only) variables are supported** — multi-dimensional profile variables (e.g. Thomson scattering channel profiles, equilibrium 2-D fields) are skipped with a logged error rather than crashing the trace load.
 
@@ -411,7 +360,7 @@ The app keeps your selected shot and your filters. Both name shots, and the set 
 
 ### The reference shot column
 
-Set **reference_shot_col** under **Table columns** to use the [Lineage tab](#the-lineage-tab) and the **Reference graph** button. Clear it to turn both off. You do not have to restart.
+Set **reference_shot_col** under **Table columns** to use the [Lineage tab](dashboard.md#lineage). Clear it to turn the tab off. You do not have to restart.
 
 The Lineage tab is always in the tab bar. It is switched off, and tells you what is missing, until you set the column.
 
@@ -427,6 +376,54 @@ These settings need a restart, and the **Active configuration** table at the foo
 - `plugins`. The app imports the Python modules in this list. It listens on every network interface and asks for no password, so a module path that a web page could set would let any visitor run code in the server process. Use the config file or `--plugins` for this setting.
 
 That table also gives the process ID of the worker that built the page. The app runs four workers by default, and each one keeps its own copy of the data, so this tells you which worker answered you.
+
+---
+
+## Command-line reference
+
+```sh
+nice-shot SHOT_DATA [options]
+```
+
+These flags have no config file setting:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `SHOT_DATA` | — (required) | Shot statistics file. Refer to [Data Formats](data-formats.md#shot-statistics-file-shot_data). |
+| `--config PATH` | `nice_shot/config.yaml` | Path to the YAML config file. |
+| `--data-dir PATH` | `data/mastu/` | Directory of per-shot trace files (`parquet` backend), or the store location (`fairmast` backend). |
+| `--projection PATH` | _(none)_ | Pre-computed 2-D embedding. The app does not calculate UMAP or PCA. |
+| `--shap-data PATH` | _(none)_ | SHAP values NetCDF file. |
+| `--umap-cache PATH` | platform cache directory | Where the app reads and writes the projection cache. |
+| `--host HOST` | `0.0.0.0` | Bind address. |
+| `--port PORT` | `8050` | Port. |
+| `--workers N` | `4` | Number of gunicorn worker processes. The app ignores it in debug mode. |
+| `--debug / --no-debug` | off | Use the Flask development server instead of gunicorn. |
+
+Each of these flags replaces the matching config file setting:
+
+| Flag | Config setting | Default |
+|------|----------------|---------|
+| `--backend NAME` | [`backend`](#backend) | `parquet` |
+| `--signals SIGNAL [SIGNAL ...]` | [`signals`](#signals) | `ip ne dalpha loopv plasma_energy` |
+| `--min-time SECONDS` | [`time_window.min_time`](#time_window) | `0.0` |
+| `--max-time SECONDS` | [`time_window.max_time`](#time_window) | `1.0` |
+| `--timebase-hz HZ` | [`uda.timebase_hz`](#uda-options) | _(none)_ |
+| `--projection-method {umap,pca}` | [`projection_method`](#projection_method) | `umap` |
+| `--n-components N` | [`projection_options.n_components`](#projection_options) | `2` |
+| `--random-state N` | [`projection_options.random_state`](#projection_options) | `42` |
+| `--n-neighbors N` | [`projection_options.n_neighbors`](#projection_options) | `15` |
+| `--min-dist F` | [`projection_options.min_dist`](#projection_options) | `0.1` |
+| `--metric NAME` | [`projection_options.metric`](#projection_options) | `euclidean` |
+| `--variable-column NAME` | [`variable_column`](#variable_column) | _(none)_ |
+| `--umap-features COLUMN [COLUMN ...]` | [`umap_features`](#umap_features) | _(all numeric columns)_ |
+| `--umap-exclude-features COLUMN [COLUMN ...]` | [`umap_exclude_features`](#umap_exclude_features) | _(none)_ |
+| `--reference-shot-col NAME` | [`reference_shot_col`](#reference_shot_col) | _(none)_ |
+| `--plugins MODULE [MODULE ...]` | [`plugins`](#plugins) | _(none)_ |
+| `--refresh-interval-seconds SECONDS` | [`refresh_interval_seconds`](#refresh_interval_seconds) | _(none)_ |
+| `--backend-option KEY=VALUE` (repeatable) | `backend_options` | _(none)_ |
+
+`--backend-option` adds to the `backend_options` in the config file. A key that is in both uses the value from the command line.
 
 ---
 
